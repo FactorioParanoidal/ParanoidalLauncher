@@ -5,8 +5,8 @@ namespace Paranoidal
 {
     /// <summary>
     /// One line of the build: Paranoidal for one Factorio version (major.minor). The launcher serves one line at a time
-    /// (settings.ini line=2.0|2.1, Lines.Current); a player of the 2.0 line moves to 2.1 with «Paranoidal 2.1»
-    /// (Migration.cs). README «Линии сборки».
+    /// (settings.ini line=2.0|2.1, Lines.Current). Since 1.4.0 the 2.0 line is not served (Lines.Retired): its player moves
+    /// to 2.1 at the start (MainForm.ForceMigration, Migration.cs). README «Линии сборки».
     /// </summary>
     sealed class BuildLine
     {
@@ -105,6 +105,13 @@ namespace Paranoidal
         }
 
         public static void Set(BuildLine line) { current = line; }
+
+        /// <summary>
+        /// The line is not served any more (owner, 2026-11-10: 2.0): no build updates, «Проверить файлы», rollback, pin or
+        /// host's version; the launcher moves its player to 2.1 at the start. The line itself stays: recognising a 2.0 build,
+        /// the 2.0.77 check for an offline game and the move need it.
+        /// </summary>
+        public static bool Retired(BuildLine line) => line == L20;
 
         public static BuildLine ById(string id) => id == "2.0" ? L20 : id == "2.1" ? L21 : null;
 

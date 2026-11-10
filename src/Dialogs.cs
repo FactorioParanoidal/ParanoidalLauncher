@@ -278,24 +278,32 @@ namespace Paranoidal
             return result;
         }
 
+        /// <summary>The line above the buttons of the move windows: «Выйти» closes the launcher (1.4.0: the 2.0 line is not served).</summary>
+        static void AddExitNote(Frame fr) => AddText(fr, Tr.T(
+            "«Выйти» закроет лаунчер: сборка 2.0 больше не обслуживается, переезд предложится при следующем запуске.",
+            "\"Exit\" closes the launcher: the 2.0 build is not served any more, the move is offered at the next start."), Theme.Muted);
+
         /// <summary>
-        /// «Paranoidal 2.1»: the folder of the 2.1 game, from the installations found or chosen by hand. Returns the folder
-        /// (checked by the caller); null: cancelled.
+        /// The move to 2.1 (at the start of the 2.0 line): the folder of the 2.1 game, from the installations found or chosen
+        /// by hand. Returns the folder (checked by the caller); null: «Выйти».
         /// </summary>
         public static string ChooseMigrationTarget(IWin32Window owner, List<FactorioInfo> list)
         {
             Func<float, int> S = Theme.S;
             var l = Lines.L21;
             var fr = Open("Paranoidal 2.1", Tr.T("Укажите папку Factorio 2.1", "Choose the Factorio 2.1 folder"),
-                Tr.T("Лаунчер перенесёт в неё сейвы, сборку, настройки и себя, а потом докачает только то, чем сборка 2.1 отличается от вашей. " +
+                Tr.T("Сборка Paranoidal 2.0 больше не обновляется: лаунчер переводит всех игроков на Paranoidal 2.1.\n" +
+                     "Лаунчер перенесёт в папку Factorio 2.1 сейвы, сборку, настройки и себя, а потом докачает только то, чем сборка 2.1 отличается от вашей. " +
                      "Перед переездом он покажет, что именно и куда перенесёт.\nНужна Factorio " + l.VersionWords(false) +
                      " с дополнением Space Age (space-age, quality, elevated-rails, recycler).",
-                     "The launcher moves the saves, the build, the settings and itself there, then downloads only what the 2.1 build changes. " +
+                     "The Paranoidal 2.0 build is not updated any more: the launcher moves every player to Paranoidal 2.1.\n" +
+                     "The launcher moves the saves, the build, the settings and itself into the Factorio 2.1 folder, then downloads only what the 2.1 build changes. " +
                      "Before the move it shows what goes where.\nIt needs Factorio " + l.VersionWords(true) +
                      " with the Space Age expansion (space-age, quality, elevated-rails, recycler)."), 660);
             var radios = new List<RadioButton>();
             if (list.Count == 0)
-                AddText(fr, Tr.T("Подходящая Factorio 2.1 не найдена — укажите её папку сами.\n", "No suitable Factorio 2.1 was found: choose its folder yourself.\n") +
+                AddText(fr, Tr.T("Подходящая Factorio 2.1 не найдена — укажите её папку сами. Если её нет, установите её и запустите лаунчер снова: без неё играть со сборкой нельзя.\n",
+                    "No suitable Factorio 2.1 was found: choose its folder yourself. If you have none, install it and start the launcher again: the build cannot be played without it.\n") +
                     FactorioInfo.HowToGet21(), Theme.Orange);
             foreach (var f in list)
             {
@@ -306,6 +314,7 @@ namespace Paranoidal
                 fr.Y += S(27);
             }
             fr.Y += S(8);
+            AddExitNote(fr);
             string result = null;
             Action browse = () =>
             {
@@ -322,7 +331,7 @@ namespace Paranoidal
                 }
             };
             int by = fr.Y;
-            var ok = Buttons(fr, list.Count > 0 ? Tr.T("Далее", "Next") : Tr.T("Выбрать папку…", "Choose a folder…"));
+            var ok = Buttons(fr, list.Count > 0 ? Tr.T("Далее", "Next") : Tr.T("Выбрать папку…", "Choose a folder…"), Tr.T("Выйти", "Exit"));
             ok.Click += (s, e) =>
             {
                 if (list.Count == 0) { browse(); return; }
@@ -343,7 +352,7 @@ namespace Paranoidal
             return result;
         }
 
-        /// <summary>The move to Paranoidal 2.1: what moves where, what is deleted, that there is no way back. True: move.</summary>
+        /// <summary>The move to Paranoidal 2.1: what moves where, what is deleted, that there is no way back. True: move; false: «Выйти».</summary>
         public static bool ConfirmMigration(IWin32Window owner, MigrationPlan p)
         {
             Func<float, int> S = Theme.S;
@@ -416,7 +425,8 @@ namespace Paranoidal
             Native.DarkScrollbars(box);
             fr.F.Controls.Add(box);
             fr.Y += S(130) + S(12);
-            var ok = Buttons(fr, p.InPlace ? T("Перейти на 2.1", "Switch to 2.1") : T("Перенести на 2.1", "Move to 2.1"));
+            AddExitNote(fr);
+            var ok = Buttons(fr, p.InPlace ? T("Перейти на 2.1", "Switch to 2.1") : T("Переехать на 2.1", "Move to 2.1"), T("Выйти", "Exit"));
             bool result = false;
             ok.Click += (s, e) => { result = true; fr.F.DialogResult = DialogResult.OK; fr.F.Close(); };
             Show(fr.F, owner);

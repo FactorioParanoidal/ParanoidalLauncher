@@ -12,7 +12,8 @@ these documents are in English; texts players see are RU/EN; `README.md` and `CH
   (`src/Lines.cs`, `settings.ini` `line=`): Paranoidal 2.1 (branch `pre_release_2.1`, Factorio 2.1.x not older than
   the `base >= …` of zzzparanoidal, DLC incl. recycler) and Paranoidal 2.0 (branch `pre_release_2.0`, exactly 2.0.77).
 - It installs and updates the game's `mods\` from the branch of its line, checks the game and starts it with
-  `--mod-directory`; a player of the 2.0 line moves to 2.1 with «Paranoidal 2.1» (`src/Migration.cs`).
+  `--mod-directory`. Since 1.4.0 the 2.0 line is not served: its player moves to 2.1 at the start (`MainForm.ForceMigration`,
+  `src/Migration.cs`).
 - Players have no git, no tokens and no technical skills. "Put the exe next to the game and press one button" is
   the whole user story; every feature must keep it that way.
 - Stack: C# for .NET Framework 4.8 WinForms (present in every Windows 10/11, nothing to install), compiled by Roslyn
@@ -24,8 +25,8 @@ these documents are in English; texts players see are RU/EN; `README.md` and `CH
 | Path | Role |
 |---|---|
 | `src/AppInfo.cs` | version (single source), repo, Discord link, data folder, `Settings` (`settings.ini`), `MaskUser` |
-| `src/Lines.cs` | build lines 2.0/2.1: branch, required game (`MinGame`, `Fits`), DLC and their `mod-list.json` states; `Lines.Current` |
-| `src/Migration.cs` | the move to 2.1: plan, steps with a plan file (continues after an interruption), config merge, cross-disk copy |
+| `src/Lines.cs` | build lines 2.0/2.1: branch, required game (`MinGame`, `Fits`), DLC and their `mod-list.json` states; `Lines.Current`, `Lines.Retired` (2.0) |
+| `src/Migration.cs` | the move to 2.1: plan, steps with a plan file (continues after an interruption), config merge, cross-disk copy; started by `MainForm.ForceMigration` |
 | `src/Program.cs` | entry point, assembly attributes from `AppInfo` |
 | `src/MainForm.cs` | the window: cards (build, Factorio, mods folder), buttons, tabs «Что нового» / «Изменённые моды» / «Журнал» |
 | `src/Ui.cs`, `src/Dialogs.cs` | dark Factorio-like theme, buttons, cards; report and host-version dialogs |
@@ -115,13 +116,19 @@ Each one was chosen after a real problem; the reasons are what you need when a "
     `mod-settings.dat` (also per-user settings changed in game) and any enabled mod with a `~` dependency make
     Factorio 2.0.77 rebuild the data stage (the `~` bug is in 2.1.24 too). Facts and log markers: `docs/factorio-load-cache.md`.
 16. **Two build lines, the move to 2.1** (owner's decisions, 2026-11-04; README «Линии сборки»): one exe serves both lines
-    (one `releases/latest` for everybody); new players get 2.1 as if there were no 2.0; the 2.0 line is kept for
-    players with a 2.0 build in `mods` until the team decides to remove everything about 2.0. 2.1 needs the game
-    version of the build or newer within 2.1 ("не ниже"), 2.0 stays exactly 2.0.77. The button appears with the release
-    (no flag). The move **moves** (not copies) saves, settings, the build and the launcher; the player's own mods go as
-    they are and are asked about at the update; everything the launcher brought is removed from the 2.0 folder (the
-    window says so); «Оставить» answers, the 2.0 rollback and the pin are reset; no backup of saves. Nothing in the
-    2.1 folder is overwritten (`*.before-paranoidal`, « (2.0)» for saves).
+    (one `releases/latest` for everybody); new players get 2.1 as if there were no 2.0. 2.1 needs the game
+    version of the build or newer within 2.1 ("не ниже"), 2.0 stays exactly 2.0.77. The move **moves** (not copies)
+    saves, settings, the build and the launcher; the player's own mods go as they are and are asked about at the
+    update; everything the launcher brought is removed from the 2.0 folder (the window says so); «Оставить» answers,
+    the 2.0 rollback and the pin are reset; no backup of saves. Nothing in the 2.1 folder is overwritten
+    (`*.before-paranoidal`, « (2.0)» for saves).
+    **The forced move** (owner, 2026-11-10, 1.4.0; replaces "the 2.0 line is kept until the team decides"): the 2.0 line
+    is not served (`Lines.Retired`: no update, check of files, rollback, pin, host's version, no «Paranoidal 2.1»
+    button). After every status check with a connection the move windows open with only «Далее»/«Переехать» and
+    «Выйти» (closes the launcher; never move silently); no 2.1 game found: the window says where to get it and the
+    build cannot be played; no connection: no move, the 2.0 build can be played; a running game postpones the move.
+    The branch `pre_release_2.0` stays for launchers 1.2.0–1.3.0 whose players declined the self-update: freezing or
+    removing it is a separate team decision.
 17. **Questions only about the player's files** (owner, 2026-11-04): folders the build itself removed or renamed are
     removed by the update without a question (and kept for the rollback: do not delete them before
     `SaveForRollback`); folders of any known build version and earlier «Оставить» answers about them go without a
@@ -163,7 +170,22 @@ Each one was chosen after a real problem; the reasons are what you need when a "
 - When the game version changes: re-measure the cache markers (`docs/factorio-load-cache.md`), update
   `BuildLine.DefaultMin` in `src/Lines.cs` (the 2.1 line also follows `base >= …` of zzzparanoidal) and the reference logs.
 
-## 6. Ideas not done yet
+## 6. Planned and ideas
+
+**Planned for 1.5.0** (owner, 2026-11-10; a release of its own after 1.4.0): a **Space Age** line on the branch
+`pre_release_2.1_space_age` of the modpack. Agreed: the header button in the place of the former «Paranoidal 2.1»,
+for every 2.1 player, labelled "в активной разработке" (never "may break"); inside the Space Age profile the same place
+holds «Paranoidal 2.1» to go back. A separate profile in the same game installation: its own mods, saves and settings
+in one folder inside the game folder (rule 11: the game folder stays copyable), the game started with its own
+`--config`/write-data (to be verified before the design is final: game behaviour, where the cache keys go). First
+switch: copy the graphics/controls settings and `mod-settings.dat` once; offer to copy the 2.1 saves with a check box
+and their size (copies; 2.1 saves load in the Space Age build before the rocket, modpack ПР-080). Space Age is simply
+switched on in `mod-list.json` (rule 5 changes for this line), with a one-line hint "нужно дополнение Space Age" when
+the game has no Space Age. Only the active profile is updated; the other one when the player switches to it; reuse the
+objects of the other profile so only the difference downloads (to be measured), about +1 GB build and +1 GB cache.
+«Скопировать версию» and «Версия хоста» tell "2.1" from "2.1 Space Age".
+
+**Ideas not done yet**
 
 Proposed by agents and discussed with the team; none is approved as a plan. Ask before starting one.
 

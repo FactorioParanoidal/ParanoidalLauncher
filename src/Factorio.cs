@@ -67,10 +67,12 @@ namespace Paranoidal
 
         /// <summary>Where a player gets Factorio 2.1 (interface language).</summary>
         public static string HowToGet21() => Tr.T(
-            "Как получить Factorio 2.1: Steam — Библиотека → Factorio → Свойства → «Бета-версии» (если 2.1 ещё не основная версия); " +
+            "Как получить Factorio 2.1: Steam — Библиотека → Factorio → Свойства → «Бета-версии»: если там выбрана 2.0.77, выберите «Нет» " +
+            "(или ветку с 2.1, если она ещё не основная версия), и Steam обновит игру; " +
             "GOG Galaxy — настройки игры → «Бета-каналы»; сайт factorio.com — раздел Download (там же экспериментальные версии). " +
             "Удобно поставить 2.1 в отдельную обычную папку, например C:\\Games\\Factorio 2.1: лаунчер сам перенесёт в неё сейвы и сборку.",
-            "How to get Factorio 2.1: Steam — Library → Factorio → Properties → \"Betas\" (while 2.1 is not the main version); " +
+            "How to get Factorio 2.1: Steam — Library → Factorio → Properties → \"Betas\": if 2.0.77 is chosen there, choose \"None\" " +
+            "(or the branch with 2.1 while it is not the main version) and Steam updates the game; " +
             "GOG Galaxy — the game's settings → \"Beta channels\"; factorio.com — Download (experimental versions are there too). " +
             "It is handy to put 2.1 into its own normal folder, e.g. C:\\Games\\Factorio 2.1: the launcher moves the saves and the build there itself.");
 

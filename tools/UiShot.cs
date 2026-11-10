@@ -66,7 +66,7 @@ namespace Paranoidal
                 new FactorioInfo { Dir = @"C:\Games\Factorio 2.0.77", Version = "2.0.77" },
                 new FactorioInfo { Dir = @"D:\SteamLibrary\steamapps\common\Factorio", Version = "2.0.77" },
             });
-            // 1.3.0: the move to 2.1 (choice of the folder: found ones / none found; the confirmation: a move / in place)
+            // the move to 2.1 (choice of the folder: found ones / none found; the confirmation: a move / in place; 1.4.0: «Выйти»)
             var g21 = new System.Collections.Generic.List<FactorioInfo>
             {
                 new FactorioInfo { Dir = @"C:\Games\Factorio 2.1.24", Version = "2.1.24" }.WithAllDlc(),
@@ -86,7 +86,6 @@ namespace Paranoidal
                 t.GetMethod("AppendLogHighlight", flags).Invoke(main, new object[] { "Обновился гайд по сборке Paranoidal: версия 1.3.4 — C:\\Games\\Factorio\\Guide_to_the_Paranoidal.html" });
                 t.GetMethod("AppendLog", flags).Invoke(main, new object[] { "Следующая обычная строка журнала.", LogKind.Info });
                 t.GetMethod("SelectTab", flags).Invoke(main, new object[] { 2 });
-                ((FButton)t.GetField("btn21", flags).GetValue(main)).Enabled = true;   // enabled once the engine is up
                 var id = line.Id.Replace(".", "");
                 Snap(main, Path.Combine(a[0], "main-" + id + "-" + a[1] + ".png"));
                 main.ClientSize = new Size(Theme.S(900), Theme.S(740));
