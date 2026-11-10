@@ -17,12 +17,12 @@ namespace Paranoidal
         /// Every change of the launcher bumps it and gets a section in CHANGELOG.md; build.ps1 refuses to build
         /// a different exe under an already built version (README.md, «Версии»).
         /// </summary>
-        public const string Version = "1.4.0";
+        public const string Version = "1.5.0";
         public const string AssemblyVersion = Version + ".0";
         public const string Owner = "FactorioParanoidal";
         public const string RepoName = "ParanoidalModpack";
         public const string RepoUrl = "https://github.com/" + Owner + "/" + RepoName + ".git";
-        /// <summary>Branch of the build line the launcher serves (Lines.Current: pre_release_2.0 or pre_release_2.1).</summary>
+        /// <summary>Branch of the build line the launcher serves (Lines.Current: pre_release_2.1 or pre_release_2.1_space_age).</summary>
         public static string Branch => Lines.Current.Branch;
         /// <summary>The game the build needs, worded the same everywhere it is shown to the player (Lines.Current).</summary>
         public static string RequiredGame => Lines.Current.RequiredGame;
@@ -125,7 +125,7 @@ namespace Paranoidal
             catch { }
         }
 
-        public static string Short(string sha) => string.IsNullOrEmpty(sha) ? "—" : (sha.Length > 10 ? sha.Substring(0, 10) : sha);
+        public static string Short(string sha) => string.IsNullOrEmpty(sha) ? "?" : (sha.Length > 10 ? sha.Substring(0, 10) : sha);
 
         /// <summary>Folder of the exe (no trailing backslash).</summary>
         public static string ExeDir => Path.GetFullPath(AppDomain.CurrentDomain.BaseDirectory).TrimEnd('\\');
@@ -229,18 +229,19 @@ namespace Paranoidal
             }
         }
 
-        static bool frozen;
-
-        /// <summary>
-        /// After the launcher's data folder was moved away (the move to 2.1): this process must not create it again.
-        /// </summary>
-        public static void Freeze() { frozen = true; }
+        /// <summary>Clears every key the predicate picks (an empty value reads as no value).</summary>
+        public static void Forget(Func<string, bool> which)
+        {
+            Load();
+            var keys = new List<string>();
+            foreach (var k in data.Keys) if (which(k) && data[k].Length > 0) keys.Add(k);
+            foreach (var k in keys) Set(k, "");
+        }
 
         public static void Set(string key, string value)
         {
             Load();
             data[key] = value ?? "";
-            if (frozen) return;
             try
             {
                 Directory.CreateDirectory(AppInfo.DataDir);
@@ -324,9 +325,13 @@ namespace Paranoidal
     {
         static Stream Open(string name) => Assembly.GetExecutingAssembly().GetManifestResourceStream("Paranoidal." + name);
 
-        static Image splash, gear;
-        public static Image Splash { get { return splash ?? (splash = Load("splash.png")); } }
+        static Image gear, plate;
         public static Image Gear { get { return gear ?? (gear = Load("gear.png")); } }
+        /// <summary>The "SPACE AGE" plate of the game's Factorio Space Age logo (under the animated logo of Space Age).</summary>
+        public static Image SpaceAgePlate { get { return plate ?? (plate = Load("space-age-plate.png")); } }
+
+        /// <summary>The animated PARANOIDAL logo (GIF; LogoArt keeps it open: GDI+ reads the frames from the stream).</summary>
+        public static Stream LogoGif() => Open("paranoidal-logo.gif");
 
         static Image Load(string name)
         {

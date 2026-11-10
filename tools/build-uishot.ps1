@@ -11,5 +11,5 @@ $refs = 'mscorlib', 'System', 'System.Core', 'System.Drawing', 'System.Windows.F
 $files = Get-ChildItem "$root\src\*.cs" | Where-Object { $_.Name -ne 'Program.cs' } | ForEach-Object FullName
 New-Item -ItemType Directory -Force "$root\obj" | Out-Null
 & $csc /nologo /noconfig /nostdlib+ /nowarn:1701 /target:winexe /langversion:latest "/out:$root\obj\UiShot.exe" `
-    "/resource:$root\assets\gear.png,Paranoidal.gear.png" "/resource:$root\assets\splash.png,Paranoidal.splash.png" @refs @files "$root\tools\UiShot.cs"
+    "/resource:$root\assets\gear.png,Paranoidal.gear.png" "/resource:$root\assets\paranoidal-logo.gif,Paranoidal.paranoidal-logo.gif" "/resource:$root\assets\space-age-plate.png,Paranoidal.space-age-plate.png" @refs @files "$root\tools\UiShot.cs"
 if ($LASTEXITCODE -ne 0) { throw 'UiShot build failed' }

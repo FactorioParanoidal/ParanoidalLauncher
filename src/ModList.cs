@@ -52,7 +52,7 @@ namespace Paranoidal
                 {
                     var bak = path + ".broken-" + DateTime.Now.ToString("yyyyMMdd-HHmmss");
                     try { File.Copy(path, bak, true); } catch { }
-                    log("mod-list.json повреждён — сохранён как " + Path.GetFileName(bak) + ", создаю новый.", LogKind.Warn);
+                    log("mod-list.json повреждён и сохранён как " + Path.GetFileName(bak) + ", создаю новый.", LogKind.Warn);
                 }
                 else
                 {

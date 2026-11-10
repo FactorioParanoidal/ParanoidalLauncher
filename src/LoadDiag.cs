@@ -131,27 +131,32 @@ namespace Paranoidal
 
         static string Pick(string[] s, bool en) => en ? s[1] : s[0];
 
-        /// <summary>One line for the window: time, both caches, the first reason.</summary>
-        public string Line(bool en)
+        /// <summary>The time and both caches: "Last game start: menu in 23 s; data cache used, atlas cache used".</summary>
+        string Head(bool en)
         {
             var sb = new StringBuilder(en ? "Last game start: " : "Последний запуск игры: ");
             if (OtherMods) sb.Append(en ? "(other mods folder) " : "(другая папка модов) ");
             sb.Append(Seconds == null ? (en ? "closed before the menu" : "закрыта до меню")
-                : (en ? "to the menu " : "до меню ") + Math.Round(Seconds.Value).ToString(CultureInfo.InvariantCulture) + (en ? " s" : " с"));
-            sb.Append(" · ").Append(DataPart(en));
-            if (!Headless) sb.Append(" · ").Append(AtlasPart(en));
-            var first = DataCauses.Count > 0 && Data != LoadLog.DataState.Hit ? DataCauses[0] : AtlasCauses.Count > 0 && Atlas == LoadLog.AtlasState.Miss ? AtlasCauses[0] : null;
-            if (first != null) sb.Append(" — ").Append(Pick(first, en));
+                : (en ? "menu in " : "до меню за ") + Math.Round(Seconds.Value).ToString(CultureInfo.InvariantCulture) + (en ? " s" : " с"));
+            sb.Append("; ").Append(DataPart(en));
+            if (!Headless) sb.Append(", ").Append(AtlasPart(en));
             return sb.ToString();
+        }
+
+        /// <summary>One line for the window: time, both caches, the first reason.</summary>
+        public string Line(bool en)
+        {
+            var first = DataCauses.Count > 0 && Data != LoadLog.DataState.Hit ? DataCauses[0] : AtlasCauses.Count > 0 && Atlas == LoadLog.AtlasState.Miss ? AtlasCauses[0] : null;
+            return Head(en) + (first != null ? (en ? "; reason: " : "; причина: ") + Pick(first, en) : "");
         }
 
         string DataPart(bool en)
         {
             switch (Data)
             {
-                case LoadLog.DataState.Hit: return en ? "data cache ✔" : "кэш данных ✔";
+                case LoadLog.DataState.Hit: return en ? "data cache used" : "кэш данных сработал";
                 case LoadLog.DataState.None: return en ? "data cache off" : "кэш данных выключен";
-                default: return en ? "data cache ✖" : "кэш данных ✖";
+                default: return en ? "data cache not used" : "кэш данных не сработал";
             }
         }
 
@@ -159,16 +164,16 @@ namespace Paranoidal
         {
             switch (Atlas)
             {
-                case LoadLog.AtlasState.Hit: return en ? "atlas cache ✔" : "кэш атласа ✔";
+                case LoadLog.AtlasState.Hit: return en ? "atlas cache used" : "кэш атласа сработал";
                 case LoadLog.AtlasState.None: return en ? "atlas cache off" : "кэш атласа выключен";
-                default: return en ? "atlas cache ✖" : "кэш атласа ✖";
+                default: return en ? "atlas cache not used" : "кэш атласа не сработал";
             }
         }
 
         /// <summary>Several lines: every reason and what happens next time.</summary>
         public string Full(bool en)
         {
-            var sb = new StringBuilder(Line(en).Split(new[] { " — " }, StringSplitOptions.None)[0]);
+            var sb = new StringBuilder(Head(en));
             if (Data != LoadLog.DataState.Hit)
             {
                 sb.Append(en ? "\nData cache: " : "\nКэш данных: ");

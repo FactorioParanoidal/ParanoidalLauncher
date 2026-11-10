@@ -7,7 +7,10 @@ using System.Windows.Forms;
 
 namespace Paranoidal
 {
-    /// <summary>Small dark dialogs with input: the report options and the host's version line.</summary>
+    /// <summary>
+    /// Dialogs with input, laid out like the game's dialogs: the content in a pane, the button row under it with the way
+    /// back on the left and the confirmation on the right.
+    /// </summary>
     static class Dialogs
     {
         /// <summary>UI tests only: receives the dialog instead of showing it (the dialog then returns "cancelled").</summary>
@@ -19,10 +22,14 @@ namespace Paranoidal
             else f.ShowDialog(owner);
         }
 
+        /// <summary>A dialog being built: controls go into the pane P at pane coordinates; Y is the next free line.</summary>
         sealed class Frame
         {
             public Form F;
+            public Card P;
             public int Width, Pad, TextX, TextW, Y;
+            /// <summary>Full width inside the pane (for lists and text boxes).</summary>
+            public int Inner => Width - 2 * Pad;
         }
 
         static Frame Open(string title, string message, string sub, int width)
@@ -38,104 +45,114 @@ namespace Paranoidal
                 ShowInTaskbar = false,
                 BackColor = Theme.Window,
                 ForeColor = Theme.Text,
-                Font = new Font("Segoe UI", 9.75f),
+                Font = Theme.Body,
                 AutoScaleMode = AutoScaleMode.None,
                 KeyPreview = true,
+                ClientSize = new Size(S(width), S(200)),
             };
             var icon = Res.AppIcon(32);
             if (icon != null) f.Icon = icon;
-            var fr = new Frame { F = f, Width = S(width), Pad = S(18) };
-            int iconSize = S(56);
-            fr.TextX = fr.Pad + iconSize + S(14);
+            int m = S(12);
+            var pane = new Card(null) { Location = new Point(m, m), Size = new Size(S(width) - 2 * m, S(100)) };
+            f.Controls.Add(pane);
+            var fr = new Frame { F = f, P = pane, Width = pane.Width, Pad = S(12) };
+            int iconSize = S(48);
+            fr.TextX = fr.Pad + iconSize + S(12);
             fr.TextW = fr.Width - fr.TextX - fr.Pad;
-            f.Controls.Add(new PictureBox { Image = Res.Gear, SizeMode = PictureBoxSizeMode.Zoom, Bounds = new Rectangle(fr.Pad, fr.Pad, iconSize, iconSize), BackColor = Theme.Window });
-            var mf = new Font("Segoe UI Semibold", 11.5f);
+            pane.Controls.Add(new PictureBox { Image = Res.Gear, SizeMode = PictureBoxSizeMode.Zoom, Bounds = new Rectangle(fr.Pad, fr.Pad, iconSize, iconSize), BackColor = Theme.Pane });
             fr.Y = fr.Pad;
-            var mh = TextRenderer.MeasureText(message, mf, new Size(fr.TextW, int.MaxValue), TextFormatFlags.WordBreak).Height;
-            f.Controls.Add(new Label { Text = message, Font = mf, ForeColor = Theme.Title, Bounds = new Rectangle(fr.TextX, fr.Y, fr.TextW, mh + S(4)), UseMnemonic = false });
-            fr.Y += mh + S(10);
+            var mh = TextRenderer.MeasureText(message, Theme.Heading, new Size(fr.TextW, int.MaxValue), TextFormatFlags.WordBreak).Height;
+            pane.Controls.Add(new Label { Text = message, Font = Theme.Heading, ForeColor = Theme.Title, BackColor = Theme.Pane, Bounds = new Rectangle(fr.TextX, fr.Y, fr.TextW, mh + S(4)), UseMnemonic = false });
+            fr.Y += mh + S(8);
             if (!string.IsNullOrEmpty(sub)) AddText(fr, sub, Theme.Text);
             fr.Y = Math.Max(fr.Y, fr.Pad + iconSize + S(8));
             f.HandleCreated += (s, e) => Native.DarkTitle(f.Handle);
             return fr;
         }
 
-        static void AddText(Frame fr, string text, Color color)
+        static void AddText(Frame fr, string text, Color color, bool wide = false)
         {
-            var h = TextRenderer.MeasureText(text, fr.F.Font, new Size(fr.TextW, int.MaxValue), TextFormatFlags.WordBreak).Height;
-            fr.F.Controls.Add(new Label { Text = text, ForeColor = color, Bounds = new Rectangle(fr.TextX, fr.Y, fr.TextW, h + Theme.S(4)), UseMnemonic = false });
+            int x = wide ? fr.Pad : fr.TextX, w = wide ? fr.Inner : fr.TextW;
+            var h = TextRenderer.MeasureText(text, Theme.Body, new Size(w, int.MaxValue), TextFormatFlags.WordBreak).Height;
+            fr.P.Controls.Add(new Label { Text = text, ForeColor = color, BackColor = Theme.Pane, Bounds = new Rectangle(x, fr.Y, w, h + Theme.S(4)), UseMnemonic = false });
             fr.Y += h + Theme.S(8);
         }
 
         static T Styled<T>(T c) where T : ButtonBase
         {
-            c.BackColor = Theme.Window;
+            c.BackColor = Theme.Pane;
             c.ForeColor = Theme.Text;
             c.FlatStyle = FlatStyle.Flat;
             c.UseMnemonic = false;
-            c.FlatAppearance.BorderColor = Theme.CardHi;
-            c.FlatAppearance.CheckedBackColor = Theme.Inset;
+            c.FlatAppearance.BorderColor = Theme.DotGrey;
+            c.FlatAppearance.CheckedBackColor = Theme.Deep;
             return c;
         }
 
-        /// <summary>OK / Cancel buttons at the bottom; returns the OK button.</summary>
-        static FButton Buttons(Frame fr, string okText, string cancelText = null)
+        /// <summary>
+        /// Closes the pane and adds the button row: the way back on the left, `extra` (another action) and the confirmation
+        /// (green) on the right. Returns the confirmation button; Esc goes back.
+        /// </summary>
+        static FButton Buttons(Frame fr, string okText, string cancelText = null, FButton extra = null)
         {
             Func<float, int> S = Theme.S;
-            int bh = S(38), x = fr.Width - fr.Pad;
+            int m = S(12), bh = S(36);
+            fr.P.Height = fr.Y + fr.Pad - S(8);
+            int y = fr.P.Bottom + m, formW = fr.Width + 2 * m;
             cancelText = cancelText ?? Tr.T("Отмена", "Cancel");
-            int w = Math.Max(S(120), TextRenderer.MeasureText(cancelText, new Font("Segoe UI Semibold", 9.75f)).Width + S(30));
-            x -= w;
-            var no = new FButton(cancelText, ButtonKind.Normal) { Bounds = new Rectangle(x, fr.Y, w, bh) };
+            int w = Math.Max(S(120), TextRenderer.MeasureText(cancelText, Theme.Bold).Width + S(40));
+            var no = new FButton(cancelText, ButtonKind.Normal) { Bounds = new Rectangle(m, y, w, bh) };
             no.Click += (s, e) => { fr.F.DialogResult = DialogResult.Cancel; fr.F.Close(); };
             fr.F.Controls.Add(no);
-            x -= S(10);
-            var yesFont = new Font("Segoe UI Semibold", 11.5f);
-            int yw = Math.Max(S(150), TextRenderer.MeasureText(okText, yesFont).Width + S(34));
-            x -= yw;
-            var yes = new FButton(okText, ButtonKind.Primary) { Bounds = new Rectangle(x, fr.Y, yw, bh) };
+            int yw = Math.Max(S(150), TextRenderer.MeasureText(okText, Theme.Bold).Width + S(40));
+            var yes = new FButton(okText, ButtonKind.Confirm) { Bounds = new Rectangle(formW - m - yw, y, yw, bh) };
             fr.F.Controls.Add(yes);
-            fr.Y += bh + fr.Pad;
-            fr.F.ClientSize = new Size(fr.Width, fr.Y);
+            if (extra != null)
+            {
+                int ew = Math.Max(S(130), TextRenderer.MeasureText(extra.Text, Theme.Bold).Width + S(40));
+                extra.Bounds = new Rectangle(yes.Left - S(8) - ew, y, ew, bh);
+                fr.F.Controls.Add(extra);
+            }
+            fr.F.ClientSize = new Size(formW, y + bh + m);
             fr.F.KeyDown += (s, e) => { if (e.KeyCode == Keys.Escape) { fr.F.DialogResult = DialogResult.Cancel; fr.F.Close(); } };
             return yes;
         }
 
         static string Describe(FileInfo f) => f == null ? Tr.T("нет", "none")
-            : f.Name + " (" + Fmt.Size(f.Length) + ", " + Fmt.Date(f.LastWriteTime) + ")" + (f.Length + 64 * 1024 > Report.Limit ? Tr.T(" — больше 20 МБ", " — over 20 MB") : "");
+            : f.Name + " (" + Fmt.Size(f.Length) + ", " + Fmt.Date(f.LastWriteTime) + (f.Length + 64 * 1024 > Report.Limit ? Tr.T(", больше 20 МБ", ", over 20 MB") : "") + ")";
 
         /// <summary>Report options. Null: cancelled.</summary>
         public static Report.Input AskReport(IWin32Window owner, FactorioInfo fac)
         {
             Func<float, int> S = Theme.S;
-            var fr = Open(Tr.T("Отчёт о проблеме", "Problem report"), Tr.T("Отчёт о проблеме", "Problem report"),
-                Tr.T("Лаунчер соберёт ZIP на рабочем столе: логи игры (текущий и прошлый запуск), строку версии, mod-list.json, mod-settings.dat, " +
-                     "журналы лаунчера (sync-log.txt, crash.txt), config.ini игры и диагностику загрузки. Отправьте его в Discord сборки.\n" +
-                     "Токен аккаунта Factorio (player-data.json) в архив не попадает, имя пользователя Windows в путях заменяется.",
-                     "The launcher puts a ZIP on the desktop: game logs (this and the previous start), the version line, mod-list.json, mod-settings.dat, " +
-                     "launcher logs (sync-log.txt, crash.txt), the game's config.ini and the load diagnostics. Send it to the modpack Discord.\n" +
-                     "The Factorio account token (player-data.json) is not included; the Windows user name in paths is replaced."), 600);
+            var fr = Open(Tr.T("Отчёт о проблеме", "Problem report"), Tr.T("ZIP-архив для Discord сборки", "A ZIP archive for the modpack Discord"),
+                Tr.T("Лаунчер положит архив на рабочий стол. В нём будут логи игры (этот и прошлый запуск), строка версии, mod-list.json, mod-settings.dat, " +
+                     "журналы лаунчера (sync-log.txt, crash.txt), config.ini игры и диагностика загрузки.\n" +
+                     "Токен аккаунта Factorio (player-data.json) в архив не попадает, а имя пользователя Windows в путях заменяется.",
+                     "The launcher puts the archive on the desktop. It holds the game logs (this and the previous start), the version line, mod-list.json, mod-settings.dat, " +
+                     "the launcher logs (sync-log.txt, crash.txt), the game's config.ini and the load diagnostics.\n" +
+                     "The Factorio account token (player-data.json) stays out, and the Windows user name in paths is replaced."), 620);
             var last = Report.LastSave(fac, false);
             var auto = Report.LastSave(fac, true);
             var chk = Styled(new CheckBox { Text = Tr.T("Добавить сейв", "Add a save"), Checked = false });
-            chk.Bounds = new Rectangle(fr.TextX, fr.Y, fr.TextW, S(26));
-            fr.F.Controls.Add(chk);
+            chk.Bounds = new Rectangle(fr.TextX, fr.Y, fr.TextW, S(24));
+            fr.P.Controls.Add(chk);
             fr.Y += S(28);
             var rbLast = Styled(new RadioButton { Text = Tr.T("Последний сейв: ", "Latest save: ") + Describe(last), Checked = true });
             var rbAuto = Styled(new RadioButton { Text = Tr.T("Последнее автосохранение: ", "Latest autosave: ") + Describe(auto) });
-            var rbPick = Styled(new RadioButton { Text = Tr.T("Выберу сам…", "Choose a file…") });
+            var rbPick = Styled(new RadioButton { Text = Tr.T("Выбрать файл…", "Choose a file…") });
             foreach (var rb in new[] { rbLast, rbAuto, rbPick })
             {
-                rb.Bounds = new Rectangle(fr.TextX + S(22), fr.Y, fr.TextW - S(22), S(26));
+                rb.Bounds = new Rectangle(fr.TextX + S(24), fr.Y, fr.TextW - S(24), S(24));
                 // choosing a variant means "add a save" (disabled radio buttons are unreadable on the dark background)
                 rb.Click += (s, e) => chk.Checked = true;
-                fr.F.Controls.Add(rb);
-                fr.Y += S(27);
+                fr.P.Controls.Add(rb);
+                fr.Y += S(28);
             }
             if (last == null && auto != null) { rbAuto.Checked = true; }
             fr.Y += S(4);
-            AddText(fr, Tr.T("Архив не больше 20 МБ (лимит Discord). Сейв, который не помещается, не добавится — лаунчер покажет, где он лежит, чтобы приложить его отдельно.",
-                "The archive stays under 20 MB (the Discord limit). A save that does not fit is not added: the launcher shows where it is, to attach it separately."), Theme.Muted);
+            AddText(fr, Tr.T("Архив не больше 20 МБ, это лимит Discord. Если сейв туда не помещается, лаунчер его не добавит и покажет, где он лежит: его можно приложить отдельно.",
+                "The archive stays under 20 MB, the Discord limit. A save that does not fit is left out, and the launcher shows where it is so you can attach it separately."), Theme.Muted);
             var ok = Buttons(fr, Tr.T("Создать архив", "Create the archive"));
             Report.Input result = null;
             ok.Click += (s, e) =>
@@ -183,41 +200,39 @@ namespace Paranoidal
             var fr = Open(Tr.T("Обновление лаунчера", "Launcher update"),
                 Tr.T("Вышла новая версия лаунчера: ", "A new launcher version is out: ") + r.Version,
                 Tr.T("У вас версия ", "You have version ") + AppInfo.Version + ". " +
-                (since.Count > 1 ? Tr.T("Новые версии: ", "New versions: ") + versions + ". " : "") +
-                Tr.T("Рекомендуем обновиться: исправления и новые возможности приходят только с новой версией. " +
-                     "Лаунчер скачает её (", "We recommend updating: fixes and new features come only with the new version. " +
-                     "The launcher downloads it (") + Fmt.Size(r.Size) +
-                Tr.T("), проверит и перезапустится. Настройки, моды и сейвы не меняются.",
-                     "), checks it and restarts. Settings, mods and saves are not changed.") +
-                (needsAdmin ? Tr.T("\n\nПапка лаунчера защищена Windows (например, Program Files): Windows попросит права администратора. " +
-                                   "Чтобы этот вопрос больше не появлялся, перенесите папку игры вместе с лаунчером в обычную папку, например C:\\Games.",
-                                   "\n\nThe launcher's folder is protected by Windows (e.g. Program Files): Windows asks for administrator rights. " +
-                                   "To stop this question, move the game folder with the launcher to a normal folder, e.g. C:\\Games.") : ""), 680);
+                (since.Count > 1 ? Tr.T("С тех пор вышли ", "Released since then: ") + versions + ". " : "") +
+                Tr.T("Советуем обновиться: лаунчер скачает новую версию (", "We recommend updating: the launcher downloads the new version (") + Fmt.Size(r.Size) +
+                Tr.T("), проверит её и перезапустится. Настройки, моды и сейвы останутся как есть.",
+                     "), checks it and restarts. Settings, mods and saves stay as they are.") +
+                (needsAdmin ? Tr.T("\n\nWindows защищает папку лаунчера (например, это Program Files) и попросит права администратора. " +
+                                   "Чтобы вопрос больше не появлялся, перенесите папку игры вместе с лаунчером в обычную папку, например C:\\Games.",
+                                   "\n\nWindows protects the launcher's folder (e.g. Program Files) and asks for administrator rights. " +
+                                   "To stop this question, move the game folder with the launcher to a normal folder, e.g. C:\\Games.") : ""), 700);
             var box = new RichTextBox
             {
                 ReadOnly = true,
                 BorderStyle = BorderStyle.None,
-                BackColor = Theme.Inset,
+                BackColor = Theme.Deep,
                 ForeColor = Theme.Text,
                 Font = new Font("Segoe UI", 9.25f),
                 WordWrap = true,
                 DetectUrls = false,
-                Bounds = new Rectangle(fr.Pad, fr.Y, fr.Width - 2 * fr.Pad, S(260)),
+                Bounds = new Rectangle(fr.Pad, fr.Y, fr.Inner, S(260)),
+                Tag = Card.DeepTag,
             };
             Native.DarkScrollbars(box);
-            var bold = new Font("Segoe UI Semibold", 10.5f);
             foreach (var c in since)
             {
-                box.SelectionFont = bold;
+                box.SelectionFont = Theme.Bold;
                 box.SelectionColor = Theme.Title;
-                box.AppendText(AppInfo.Name + " " + c.Version + (c.Date.Length > 0 ? "  ·  " + c.Date : "") + "\n");
+                box.AppendText(AppInfo.Name + " " + c.Version + (c.Date.Length > 0 ? ", " + c.Date : "") + "\n");
                 box.SelectionFont = box.Font;
                 box.SelectionColor = Theme.Text;
                 box.AppendText(PlainMarkdown(c.Text) + "\n\n");
             }
             if (since.Count == 0) box.AppendText(Tr.T("Список изменений недоступен.", "The list of changes is not available."));
             box.SelectionStart = 0;
-            fr.F.Controls.Add(box);
+            fr.P.Controls.Add(box);
             fr.Y += S(260) + S(12);
             var ok = Buttons(fr, Tr.T("Обновить сейчас", "Update now"), Tr.T("Позже", "Later"));
             bool result = false;
@@ -249,18 +264,18 @@ namespace Paranoidal
         {
             Func<float, int> S = Theme.S;
             var fr = Open(Tr.T("Папка игры", "Game folder"), Tr.T("Найдено несколько подходящих установок ", "Several suitable installations of ") + AppInfo.RequiredGame,
-                Tr.T("Лаунчер работает правильно, только когда лежит в папке игры, в которую вы играете со сборкой. " +
-                     "Выберите её — лаунчер перенесёт себя туда, оставит ярлык на рабочем столе и запустится оттуда.",
-                     "The launcher works properly only from the folder of the game you play the modpack with. " +
-                     "Choose it: the launcher moves itself there, leaves a desktop shortcut and starts from there."), 640);
+                Tr.T("Лаунчер должен лежать в папке той игры, в которую вы играете со сборкой. " +
+                     "Выберите её: лаунчер перенесёт себя туда, оставит ярлык на рабочем столе и запустится оттуда.",
+                     "The launcher must live in the folder of the game you play the modpack with. " +
+                     "Choose it: the launcher moves itself there, leaves a desktop shortcut and starts from there."), 660);
             var radios = new List<RadioButton>();
             foreach (var f in list)
             {
                 var rb = Styled(new RadioButton { Text = f.Dir, Checked = radios.Count == 0 });
-                rb.Bounds = new Rectangle(fr.TextX, fr.Y, fr.TextW, S(26));
-                fr.F.Controls.Add(rb);
+                rb.Bounds = new Rectangle(fr.TextX, fr.Y, fr.TextW, S(24));
+                fr.P.Controls.Add(rb);
                 radios.Add(rb);
-                fr.Y += S(27);
+                fr.Y += S(28);
             }
             fr.Y += S(8);
             var ok = Buttons(fr, Tr.T("Перенести сюда", "Move here"), Tr.T("Не сейчас", "Not now"));
@@ -278,160 +293,81 @@ namespace Paranoidal
             return result;
         }
 
-        /// <summary>The line above the buttons of the move windows: «Выйти» closes the launcher (1.4.0: the 2.0 line is not served).</summary>
-        static void AddExitNote(Frame fr) => AddText(fr, Tr.T(
-            "«Выйти» закроет лаунчер: сборка 2.0 больше не обслуживается, переезд предложится при следующем запуске.",
-            "\"Exit\" closes the launcher: the 2.0 build is not served any more, the move is offered at the next start."), Theme.Muted);
-
         /// <summary>
-        /// The move to 2.1 (at the start of the 2.0 line): the folder of the 2.1 game, from the installations found or chosen
-        /// by hand. Returns the folder (checked by the caller); null: «Выйти».
+        /// The first switch to the Space Age build (1.5.0): what the profile is, what is copied once, the saves as a
+        /// choice, the disk space. Null: cancelled; otherwise whether to copy the saves of the main build.
         /// </summary>
-        public static string ChooseMigrationTarget(IWin32Window owner, List<FactorioInfo> list)
+        public static bool? ConfirmSpaceAge(IWin32Window owner, GameProfile.SpaceAgePlan p, FactorioInfo fac)
         {
             Func<float, int> S = Theme.S;
-            var l = Lines.L21;
-            var fr = Open("Paranoidal 2.1", Tr.T("Укажите папку Factorio 2.1", "Choose the Factorio 2.1 folder"),
-                Tr.T("Сборка Paranoidal 2.0 больше не обновляется: лаунчер переводит всех игроков на Paranoidal 2.1.\n" +
-                     "Лаунчер перенесёт в папку Factorio 2.1 сейвы, сборку, настройки и себя, а потом докачает только то, чем сборка 2.1 отличается от вашей. " +
-                     "Перед переездом он покажет, что именно и куда перенесёт.\nНужна Factorio " + l.VersionWords(false) +
-                     " с дополнением Space Age (space-age, quality, elevated-rails, recycler).",
-                     "The Paranoidal 2.0 build is not updated any more: the launcher moves every player to Paranoidal 2.1.\n" +
-                     "The launcher moves the saves, the build, the settings and itself into the Factorio 2.1 folder, then downloads only what the 2.1 build changes. " +
-                     "Before the move it shows what goes where.\nIt needs Factorio " + l.VersionWords(true) +
-                     " with the Space Age expansion (space-age, quality, elevated-rails, recycler)."), 660);
-            var radios = new List<RadioButton>();
-            if (list.Count == 0)
-                AddText(fr, Tr.T("Подходящая Factorio 2.1 не найдена — укажите её папку сами. Если её нет, установите её и запустите лаунчер снова: без неё играть со сборкой нельзя.\n",
-                    "No suitable Factorio 2.1 was found: choose its folder yourself. If you have none, install it and start the launcher again: the build cannot be played without it.\n") +
-                    FactorioInfo.HowToGet21(), Theme.Orange);
-            foreach (var f in list)
+            Func<string, string, string> T = Tr.T;
+            var fr = Open("Paranoidal 2.1 Space Age", T("Установить Paranoidal 2.1 Space Age?", "Install Paranoidal 2.1 Space Age?"),
+                T("Сборка Space Age в активной разработке. Она живёт в отдельном профиле, в папке ", "The Space Age build is in active development. It lives in a profile of its own, in the folder ") +
+                p.Root + T(": там свои моды, сейвы и настройки. Основная сборка 2.1 и её сейвы останутся как есть, вернуться можно вкладкой «Paranoidal 2.1».",
+                           ": its own mods, saves and settings. The main 2.1 build and its saves stay as they are; the \"Paranoidal 2.1\" tab switches back."), 680);
+            AddText(fr, T("Лаунчер один раз скопирует в профиль настройки игры (графика, клавиши), настройки модов, вход в аккаунт и чертежи. ",
+                          "The launcher copies the game settings (graphics, controls), the mod settings, the account login and the blueprints into the profile once. ") +
+                (p.Seed.Count > 0 ? T("За основу он возьмёт вашу сборку 2.1, поэтому скачается только разница.", "Your 2.1 build is the base, so only the difference is downloaded.")
+                                  : T("Сборка Space Age скачается целиком, около 1 ГБ.", "The Space Age build is downloaded in full, about 1 GB.")), Theme.Text);
+            var chk = Styled(new CheckBox
             {
-                var rb = Styled(new RadioButton { Text = f.Dir + "  —  " + f.Describe(null, l), Checked = radios.Count == 0 });
-                rb.Bounds = new Rectangle(fr.TextX, fr.Y, fr.TextW, S(26));
-                fr.F.Controls.Add(rb);
-                radios.Add(rb);
-                fr.Y += S(27);
-            }
-            fr.Y += S(8);
-            AddExitNote(fr);
-            string result = null;
-            Action browse = () =>
+                Text = T("Скопировать сейвы основной сборки", "Copy the saves of the main build") + " (" + p.Saves + (p.Saves > 0 ? ", " + Fmt.Size(p.SavesBytes) : "") + ")",
+                Checked = false,
+                Enabled = p.Saves > 0,
+            });
+            chk.Bounds = new Rectangle(fr.TextX, fr.Y, fr.TextW, S(24));
+            fr.P.Controls.Add(chk);
+            fr.Y += S(28);
+            AddText(fr, T("Сейвы копируются, оригиналы остаются на месте. Сейвы основной сборки открываются в сборке Space Age, пока не запущена ракета. Сейв Space Age в основной сборке не откроется.",
+                          "The saves are copied; the originals stay where they are. Saves of the main build load in the Space Age build until a rocket is launched. A Space Age save does not load in the main build."), Theme.Muted);
+            var space = new Label { ForeColor = Theme.Text, BackColor = Theme.Pane, UseMnemonic = false, Bounds = new Rectangle(fr.TextX, fr.Y, fr.TextW, S(40)) };
+            fr.P.Controls.Add(space);
+            fr.Y += S(44);
+            bool spaceAge = fac != null && !fac.MissingDlcFor(Lines.SA).Contains("space-age");
+            if (!spaceAge)
+                AddText(fr, T("Нужно дополнение Space Age: в этой игре его нет. Без него сборка Space Age не запустится.",
+                              "It needs the Space Age expansion, and this game does not have it. The Space Age build does not run without it."), Theme.Red);
+            var ok = Buttons(fr, T("Установить Space Age", "Install Space Age"), T("Назад", "Back"));
+            Action check = () =>
             {
-                using (var dlg = new FolderBrowserDialog
-                {
-                    Description = Tr.T("Папка Factorio 2.1 (в ней есть bin\\x64\\factorio.exe)", "The Factorio 2.1 folder (it has bin\\x64\\factorio.exe)"),
-                    ShowNewFolderButton = false,
-                })
-                {
-                    if (dlg.ShowDialog(fr.F) != DialogResult.OK) return;
-                    result = dlg.SelectedPath;
-                    fr.F.DialogResult = DialogResult.OK;
-                    fr.F.Close();
-                }
+                long need = p.Need(chk.Checked);
+                bool enough = p.Free < 0 || p.Free >= need;
+                space.Text = T("Нужно места на диске: около ", "Disk space needed: about ") + Fmt.Size(need) + T(" (сборка и кэш загрузки игры)", " (the build and the game's load cache)") +
+                    (p.Free >= 0 ? T(", свободно ", ", free ") + Fmt.Size(p.Free) : "") + ".";
+                space.ForeColor = enough ? Theme.Text : Theme.Red;
+                ok.Enabled = enough && spaceAge;
             };
-            int by = fr.Y;
-            var ok = Buttons(fr, list.Count > 0 ? Tr.T("Далее", "Next") : Tr.T("Выбрать папку…", "Choose a folder…"), Tr.T("Выйти", "Exit"));
-            ok.Click += (s, e) =>
-            {
-                if (list.Count == 0) { browse(); return; }
-                int i = radios.FindIndex(r => r.Checked);
-                if (i < 0) return;
-                result = list[i].Dir;
-                fr.F.DialogResult = DialogResult.OK;
-                fr.F.Close();
-            };
-            if (list.Count > 0)
-            {
-                var other = new FButton(Tr.T("Другая папка…", "Another folder…"), ButtonKind.Normal) { Bounds = new Rectangle(fr.Pad, by, S(150), S(38)) };
-                other.Click += (s, e) => browse();
-                fr.F.Controls.Add(other);
-            }
+            chk.CheckedChanged += (s, e) => check();
+            check();
+            bool? result = null;
+            ok.Click += (s, e) => { result = chk.Checked; fr.F.DialogResult = DialogResult.OK; fr.F.Close(); };
             Show(fr.F, owner);
             fr.F.Dispose();
             return result;
         }
 
-        /// <summary>The move to Paranoidal 2.1: what moves where, what is deleted, that there is no way back. True: move; false: «Выйти».</summary>
-        public static bool ConfirmMigration(IWin32Window owner, MigrationPlan p)
+        /// <summary>The move of the Space Age profile to another folder (GameProfile.PlanMove). True: «Перенести».</summary>
+        public static bool ConfirmProfileMove(IWin32Window owner, GameProfile.MovePlan p)
         {
-            Func<float, int> S = Theme.S;
-            var sb = new System.Text.StringBuilder();
             Func<string, string, string> T = Tr.T;
-            if (p.InPlace)
-                sb.Append(T("Игра в папке ", "The game in ")).Append(p.NewDir).Append(T(" уже версии ", " is version ")).Append(p.NewVersion)
-                  .Append(T(". Файлы не переносятся: лаунчер переключит сборку на 2.1 и докачает только разницу.",
-                               " already. Nothing is moved: the launcher switches the build to 2.1 and downloads only the difference."));
-            else
-            {
-                sb.Append(T("Из: ", "From: ")).Append(p.OldDir).Append('\n').Append(T("В:   ", "To:   ")).Append(p.NewDir).Append("\n\n");
-                sb.Append(T("Переедут (перемещением, без копий):", "What moves (moved, not copied):")).Append('\n');
-                if (p.SharedWd)
-                    sb.Append(T("• сейвы, чертежи и настройки игры переносить не нужно: обе игры пользуются одной папкой ", "• saves, blueprints and game settings stay: both games use one folder ")).Append(p.NewWd).Append('\n');
-                else
-                {
-                    sb.Append(T("• сейвы: ", "• saves: ")).Append(p.Saves).Append(p.Saves > 0 ? " (" + Fmt.Size(p.SavesBytes) + ")" : "").Append(" → ").Append(Path.Combine(p.NewWd, "saves")).Append('\n');
-                    if (p.PlayerItems.Count > 0) sb.Append("• ").Append(string.Join(", ", p.PlayerItems)).Append(" → ").Append(p.NewWd).Append('\n');
-                    if (p.Steps.Any(s => s.Kind == "config"))
-                        sb.Append(T("• настройки игры (графика, клавиши): копия config.ini игры 2.0 → ", "• game settings (graphics, controls): a copy of the 2.0 config.ini → "))
-                          .Append(p.NewCfg).Append(T(", пути — от игры 2.1", ", paths of the 2.1 game")).Append('\n');
-                }
-                if (p.ModsStay)
-                    sb.Append(T("• своя папка модов ", "• your own mods folder ")).Append(p.ModsDir).Append(T(" остаётся на месте и переходит на 2.1", " stays where it is and switches to 2.1")).Append('\n');
-                else
-                    sb.Append(T("• сборка и ваши моды (", "• the build and your mods (")).Append(Fmt.Size(p.ModsBytes)).Append(") → ").Append(p.NewMods)
-                      .Append(T(", потом докачается только разница со сборкой 2.1", ", then only the difference to the 2.1 build is downloaded")).Append('\n');
-                sb.Append(T("• лаунчер, его данные и гайд → ", "• the launcher, its data and the guide → ")).Append(p.NewDir).Append(T("; ярлыки будут вести туда", "; the shortcuts will point there"));
-            }
-            if (p.Foreign.Count > 0)
-                sb.Append("\n\n").Append(T("Моды не из сборки (", "Mods not from the build (")).Append(p.Foreign.Count).Append("): ")
-                  .Append(string.Join(", ", p.Foreign.Take(12))).Append(p.Foreign.Count > 12 ? " …" : "")
-                  .Append(p.InPlace ? T(" — останутся как есть", ": they stay as they are") : T(" — переедут как есть", ": they move as they are"))
-                  .Append(T("; при обновлении лаунчер спросит, оставить ли их: многие моды для 2.0 в 2.1 не загрузятся.",
-                             "; the update asks whether to keep them, many mods for 2.0 do not load in 2.1."));
-            var fr = Open(T("Переезд на Paranoidal 2.1", "Moving to Paranoidal 2.1"),
-                p.InPlace ? T("Перейти на Paranoidal 2.1?", "Switch to Paranoidal 2.1?")
-                          : T("Перенести сейвы, сборку и настройки в Factorio ", "Move the saves, the build and the settings to Factorio ") + p.NewVersion + "?",
-                sb.ToString(), 760);
-            AddText(fr, T("⚠ Переезд необратим. Сейв, сохранённый в 2.1, в Factorio 2.0 не откроется, а настройки модов (mod-settings.dat) после 2.1 игра 2.0 не прочитает. " +
-                            "Вернуться на Paranoidal 2.0 этим лаунчером нельзя. Играйте на сервере? Переезжайте вместе с хостом.",
-                            "⚠ The move cannot be undone. A save made in 2.1 does not open in Factorio 2.0, and the 2.0 game cannot read the mod settings (mod-settings.dat) after 2.1. " +
-                            "This launcher cannot go back to Paranoidal 2.0. Playing on a server? Move together with the host."), Theme.Red);
-            string removed;
-            if (p.InPlace)
-                removed = T("⚠ Сбрасываются: откат сборки 2.0, «Не менять версию» и ответы «Оставить» про лишние моды.",
-                            "⚠ Reset: the 2.0 build rollback, \"Keep this version\" and the \"Keep\" answers about extra mods.");
-            else
-                removed = T("⚠ Из папки 2.0 удалится всё, что принёс лаунчер: сам лаунчер, его данные (в том числе откат сборки 2.0), гайд, ответы «Оставить» про лишние моды",
-                            "⚠ Everything the launcher brought is removed from the 2.0 folder: the launcher, its data (with the 2.0 build rollback), the guide, the \"Keep\" answers about extra mods") +
-                    (p.CacheItems.Count > 0 ? T(" и кэш загрузки игры 2.0 (", " and the load cache of the 2.0 game (") + string.Join(", ", p.CacheItems) + " — " + Fmt.Size(p.CacheBytes) + ")" : "") +
-                    T(". В папке 2.0 останутся файлы игры, её config.ini и логи.", ". The 2.0 folder keeps the game files, its config.ini and logs.");
-            AddText(fr, removed, Theme.Orange);
-            if (p.Asides.Count > 0)
-                AddText(fr, T("Уже есть в папке 2.1 и не будет перезаписано, а останется рядом под другим именем: ", "Already in the 2.1 folder and not overwritten, kept next to it under another name: ") +
-                    string.Join("; ", p.Asides), Theme.Muted);
-            var box = new RichTextBox
-            {
-                ReadOnly = true,
-                BorderStyle = BorderStyle.None,
-                BackColor = Theme.Inset,
-                ForeColor = Theme.Text,
-                Font = new Font("Consolas", 8.5f),
-                WordWrap = false,
-                DetectUrls = false,
-                Bounds = new Rectangle(fr.Pad, fr.Y, fr.Width - 2 * fr.Pad, S(130)),
-                Text = string.Join("\n", p.Steps.Select(s => Migration.Describe(s, Tr.En))),
-            };
-            Native.DarkScrollbars(box);
-            fr.F.Controls.Add(box);
-            fr.Y += S(130) + S(12);
-            AddExitNote(fr);
-            var ok = Buttons(fr, p.InPlace ? T("Перейти на 2.1", "Switch to 2.1") : T("Переехать на 2.1", "Move to 2.1"), T("Выйти", "Exit"));
-            bool result = false;
-            ok.Click += (s, e) => { result = true; fr.F.DialogResult = DialogResult.OK; fr.F.Close(); };
-            Show(fr.F, owner);
-            fr.F.Dispose();
-            return result;
+            var sub = T("Из: ", "From: ") + p.From + "\n" + T("В: ", "To: ") + p.To + "\n\n" +
+                T("Переедут моды, сейвы, настройки и кэш загрузки (", "The mods, saves, settings and the load cache move (") + Fmt.Size(p.Bytes) + ")." +
+                (p.Free >= 0 ? T(" На диске ", " The disk ") + Path.GetPathRoot(p.To) + T(" свободно ", " has free ") + Fmt.Size(p.Free) + "." : "") +
+                (p.SameVolume ? "" : "\n" + T("Профиль переезжает на другой диск: он скопируется, а старая папка удалится только после полной копии. Это займёт несколько минут.",
+                                                "The profile goes to another disk: it is copied, and the old folder is deleted only after the full copy. It takes a few minutes.")) +
+                (p.OutsideGame ? "\n" + T("Профиль будет лежать вне папки игры: если копировать папку игры на другой компьютер, профиль Space Age нужно переносить отдельно.",
+                                          "The profile will be outside the game folder: when you copy the game folder to another PC, move the Space Age profile separately.") : "");
+            return DarkDialog.Ask(owner, T("Профиль Space Age", "Space Age profile"), T("Перенести профиль Space Age?", "Move the Space Age profile?"), sub, null,
+                T("Перенести", "Move"), T("Отмена", "Cancel"), Theme.Title) == DialogResult.Yes;
+        }
+
+        /// <summary>The chosen folder already has a Space Age profile. True: use it (the current one stays where it is).</summary>
+        public static bool ConfirmUseProfile(IWin32Window owner, GameProfile.MovePlan p)
+        {
+            Func<string, string, string> T = Tr.T;
+            return DarkDialog.Ask(owner, T("Профиль Space Age", "Space Age profile"), T("В этой папке уже есть профиль Space Age", "This folder already has a Space Age profile"),
+                p.To + "\n\n" + T("Использовать его? Лаунчер ничего не перенесёт и не перезапишет, а профиль из папки\n", "Use it? The launcher moves and overwrites nothing; the profile in\n") +
+                p.From + T("\nостанется на месте.", "\nstays where it is."), null, T("Использовать", "Use it"), T("Отмена", "Cancel"), Theme.Title) == DialogResult.Yes;
         }
 
         /// <summary>The host's version line. Null: cancelled.</summary>
@@ -440,33 +376,34 @@ namespace Paranoidal
             Func<float, int> S = Theme.S;
             var fr = Open(Tr.T("Версия хоста", "Host's version"), Tr.T("Перейти на версию сборки хоста", "Switch to the host's build version"),
                 Tr.T("Попросите хоста нажать «Скопировать версию» и вставьте его строку сюда. Лаунчер скачает ровно эту версию сборки " +
-                     "(нужен интернет, качается только разница) и включит «Не менять версию», чтобы не предлагать обновление. " +
+                     "(нужен интернет, скачается только разница) и включит «Не менять версию», чтобы не предлагать обновление. " +
                      "Когда хост обновится, снимите эту галочку.",
                      "Ask the host to press \"Copy version\" and paste the line here. The launcher downloads exactly that build version " +
-                     "(needs internet, only the difference is downloaded) and turns \"Keep this version\" on, so it does not offer the update. " +
-                     "When the host updates, clear that check box."), 600);
+                     "(it needs internet and downloads only the difference) and turns on \"Keep this version\", so it stops offering the update. " +
+                     "When the host updates, clear that check box."), 620);
             var box = new TextBox
             {
                 Multiline = true,
                 WordWrap = true,
-                BorderStyle = BorderStyle.FixedSingle,
-                BackColor = Theme.Inset,
+                BorderStyle = BorderStyle.None,
+                BackColor = Theme.Deep,
                 ForeColor = Theme.Text,
                 Font = new Font("Consolas", 9.5f),
-                Bounds = new Rectangle(fr.Pad, fr.Y, fr.Width - 2 * fr.Pad, S(72)),
+                Bounds = new Rectangle(fr.Pad, fr.Y, fr.Inner, S(72)),
+                Tag = Card.DeepTag,
             };
             try { if (Clipboard.ContainsText() && VersionLine.ParseHost(Clipboard.GetText()) != null) box.Text = Clipboard.GetText().Trim(); } catch { }
-            fr.F.Controls.Add(box);
+            fr.P.Controls.Add(box);
             fr.Y += S(72) + S(8);
-            var hint = new Label { ForeColor = Theme.Muted, Bounds = new Rectangle(fr.Pad, fr.Y, fr.Width - 2 * fr.Pad, S(22)), UseMnemonic = false };
-            fr.F.Controls.Add(hint);
-            fr.Y += S(28);
+            var hint = new StatusLine(Theme.Body) { BackColor = Theme.Pane, Bounds = new Rectangle(fr.Pad, fr.Y, fr.Inner, S(22)) };
+            fr.P.Controls.Add(hint);
+            fr.Y += S(30);
             Action check = () =>
             {
                 var sha = VersionLine.ParseHost(box.Text);
                 hint.Text = box.Text.Trim().Length == 0 ? "" : sha != null ? Tr.T("Версия сборки в строке: ", "Build version in the line: ") + sha
-                    : Tr.T("В строке нет версии сборки (номер в скобках).", "The line has no build version (the id in parentheses).");
-                hint.ForeColor = sha != null ? Theme.Green : Theme.Orange;
+                    : Tr.T("В строке нет версии сборки (номера в скобках).", "The line has no build version (the id in parentheses).");
+                hint.Color = sha != null ? Theme.Green : Theme.Orange;
             };
             box.TextChanged += (s, e) => check();
             check();

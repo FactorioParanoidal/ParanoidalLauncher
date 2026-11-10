@@ -121,7 +121,7 @@ namespace Paranoidal
             var root = Path.GetDirectoryName(full);
             if (root == null) return Tr.T("Неверный путь: ", "Invalid path: ") + full;
             if (Directory.Exists(Path.Combine(root, ".git")) || File.Exists(Path.Combine(root, ".git")))
-                return Tr.T("Рядом с этой папкой mods лежит .git — это чья-то рабочая копия репозитория.\nУтилита не будет её трогать. Выберите другую папку.",
+                return Tr.T("Рядом с этой папкой mods лежит .git, это чья-то рабочая копия репозитория.\nЛаунчер не будет её трогать. Выберите другую папку.",
                     "There is a .git folder next to this mods folder: it is someone's working copy of the repository.\nThe launcher will not touch it. Choose another folder.");
             return null;
         }
@@ -134,6 +134,12 @@ namespace Paranoidal
         const string Zero = "0000000000000000000000000000000000000000";
         /// <summary>Test harness only: do not refuse while Factorio is running.</summary>
         public bool SkipRunningCheck;
+        /// <summary>
+        /// The first install of the Space Age profile: the folders of the main build copied into it as the base
+        /// (GameProfile.CreateSpaceAge). The first sync replaces what differs without asking, and those of them the Space
+        /// Age build does not have are removed without the «Лишние моды» question. Set for one update only.
+        /// </summary>
+        public HashSet<string> Seeded;
 
         public SyncEngine(GitRunner git, ISyncUi ui)
         {
@@ -354,7 +360,7 @@ namespace Paranoidal
         // ------------------------------------------------------------------ update
 
         /// <summary>
-        /// verify = false: update mods\ to the latest build («ОБНОВИТЬ»), or to `target` (a commit id: the host's version).
+        /// verify = false: update mods\ to the latest build («Обновить»), or to `target` (a commit id: the host's version).
         /// verify = true: «Проверить файлы» — read every file of the installed build again, compare it byte for byte
         /// and restore what differs; the installed version stays (it is the latest one only if nothing is installed yet).
         /// </summary>
@@ -451,8 +457,9 @@ namespace Paranoidal
                 else { diffs.Add("изменён:  " + rel); differing++; if (sample.Count < 30) sample.Add(rel); }
             }
 
-            // first sync over files that are already there (a build copied by hand, an older or changed one): ask first
-            if (OLD == null && differing > 0 && !verify)
+            // first sync over files that are already there (a build copied by hand, an older or changed one): ask first;
+            // the base copied for the Space Age profile is the launcher's own copy
+            if (OLD == null && differing > 0 && !verify && Seeded == null)
             {
                 var found = BuildFound.Scan(p.Mods);
                 if (!ui.ConfirmOverwrite(differing, sample, found))
@@ -570,7 +577,7 @@ namespace Paranoidal
                 var pc = git.Run(new[] { "config", "--get", "extensions.partialClone" });
                 if (pc.Code != 0 || pc.Text.Length == 0)
                 {
-                    ui.Log("Удаляю старую полную копию репозитория от прошлой версии утилиты (≈1,2 ГБ)…", LogKind.Warn);
+                    ui.Log("Удаляю старую полную копию репозитория от прошлой версии лаунчера (≈1,2 ГБ)…", LogKind.Warn);
                     FsUtil.DeleteDir(p.GitDir);
                 }
             }
@@ -782,6 +789,8 @@ namespace Paranoidal
                 {
                     // the build's own folders are never a question (renamed or merged mods, earlier «Оставить» answers)
                     if (oldMods != null && oldMods.Contains(name)) { byUpdate.Add(name); continue; }
+                    // the base copied for the Space Age profile (not recognised as a version): what its build does not have
+                    if (Seeded != null && Seeded.Contains(name)) { stale.Add(name); continue; }
                     if (known == null) known = KnownBuildNames(p);
                     if (known.Contains(name)) { stale.Add(name); continue; }
                 }
@@ -858,14 +867,14 @@ namespace Paranoidal
                 {
                     var pr = GitProgress.Parse(line);
                     if (pr != null && pr.Phase == "Receiving objects")
-                        ui.Progress(pr.Percent / 100.0, Tr.T("Объектов: ", "Objects: ") + Fmt.Num(pr.Done) + Tr.T(" из ", " of ") + Fmt.Num(pr.Total) + (pr.Bytes >= 0 ? " · " + Fmt.Size(pr.Bytes) : ""));
+                        ui.Progress(pr.Percent / 100.0, Tr.T("Объектов: ", "Objects: ") + Fmt.Num(pr.Done) + Tr.T(" из ", " of ") + Fmt.Num(pr.Total) + (pr.Bytes >= 0 ? ", " + Fmt.Size(pr.Bytes) : ""));
                 });
                 if (r.Code == 0) return;
                 // the computer is clearly offline: waiting 43 s for three more attempts helps nobody
                 bool noHost = Regex.IsMatch(r.Err, "Could not resolve host|getaddrinfo", RegexOptions.IgnoreCase);
                 if (attempt >= delays.Length || noHost)
-                    throw new SyncException(failRu + ": " + r.LastErrorLine() + "\nФайлы модов НЕ изменены, игру можно запускать. Повторите позже.",
-                        failEn + ": " + r.LastErrorLine() + "\nThe mod files were NOT changed, the game can be started. Try again later.");
+                    throw new SyncException(failRu + ": " + r.LastErrorLine() + "\nФайлы модов не изменены, игру можно запускать. Повторите позже.",
+                        failEn + ": " + r.LastErrorLine() + "\nThe mod files were not changed, and the game can be started. Try again later.");
                 ui.Log("Сбой связи (" + r.LastErrorLine() + "), повтор через " + delays[attempt] + " с…", LogKind.Warn);
                 Sleep(delays[attempt] * 1000);
             }
@@ -1090,11 +1099,11 @@ namespace Paranoidal
                             if (b.Fails >= 6 || consecutiveFails >= 12 || (dead && consecutiveFails >= 3))
                             {
                                 fatal = new SyncException("Связь с GitHub постоянно обрывается (" + lastError + ").\n" +
-                                    "Уже скачано " + Fmt.Num(already + doneFiles) + " из " + Fmt.Num(total) + " файлов — это не пропадёт, следующий запуск продолжит с этого места.\n" +
-                                    "Файлы модов НЕ изменены, игру можно запускать.",
+                                    "Уже скачано " + Fmt.Num(already + doneFiles) + " из " + Fmt.Num(total) + " файлов. Это не пропадёт, следующий запуск продолжит с этого места.\n" +
+                                    "Файлы модов не изменены, игру можно запускать.",
                                     "The connection to GitHub keeps dropping (" + lastError + ").\n" +
                                     "Already downloaded " + Fmt.Num(already + doneFiles) + " of " + Fmt.Num(total) + " files: they are kept, the next start continues from here.\n" +
-                                    "The mod files were NOT changed, the game can be started.");
+                                    "The mod files were not changed, and the game can be started.");
                                 stop = true;
                                 break;
                             }
@@ -1184,13 +1193,13 @@ namespace Paranoidal
 
                     var sb = new StringBuilder();
                     sb.Append(Tr.T("Файлы: ", "Files: ")).Append(Fmt.Num(Math.Min(total, already + doneFiles + inflightFiles))).Append(Tr.T(" из ", " of ")).Append(Fmt.Num(total));
-                    sb.Append(Tr.T(" · скачано ", " · downloaded ")).Append(Fmt.Size(got)).Append(Tr.T(" из ~", " of ~")).Append(Fmt.Size(got + left));
+                    sb.Append(Tr.T(", скачано ", ", downloaded ")).Append(Fmt.Size(got)).Append(Tr.T(" из ~", " of ~")).Append(Fmt.Size(got + left));
                     if (speed > 1024)
                     {
-                        sb.Append(" · ").Append(Fmt.Size(speed)).Append(Tr.T("/с", "/s"));
-                        if (left > 0) sb.Append(Tr.T(" · осталось ", " · left ")).Append(Fmt.Duration(left / speed));
+                        sb.Append(", ").Append(Fmt.Size(speed)).Append(Tr.T("/с", "/s"));
+                        if (left > 0) sb.Append(Tr.T(", осталось ", ", left ")).Append(Fmt.Duration(left / speed));
                     }
-                    sb.Append(Tr.T(" · потоков: ", " · streams: ")).Append(busy);
+                    sb.Append(Tr.T(", потоков: ", ", streams: ")).Append(busy);
                     detail = sb.ToString();
                     if (now - lastUi < 250) detail = null; else lastUi = now;
                 }
@@ -1246,6 +1255,17 @@ namespace Paranoidal
             return list;
         }
 
+        /// <summary>Top-level names in mods\ of the installed build (null: nothing installed by the launcher).</summary>
+        public HashSet<string> BuildEntries(SyncPaths p)
+        {
+            var synced = p.ReadSynced();
+            if (synced == null || !File.Exists(Path.Combine(p.GitDir, "HEAD"))) return null;
+            git.ResetCancel();
+            Bind(p);
+            var set = TopLevel(synced);
+            return set.Count == 0 ? null : set;
+        }
+
         HashSet<string> TopLevel(string sha)
         {
             var set = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -1271,7 +1291,7 @@ namespace Paranoidal
                     var parts = SplitZ(r.Out);
                     for (int i = 0; i + 1 < parts.Count; i += 2) sb.Append(parts[i]).Append('\t').Append(parts[i + 1]).Append("\r\n");
                 }
-                foreach (var m in res.Mods) sb.Append("  ").Append(m.Mod).Append(" — ").Append(m.Kind).Append(" (").Append(m.Files).Append(")\r\n");
+                foreach (var m in res.Mods) sb.Append("  ").Append(m.Mod).Append(": ").Append(m.Kind).Append(" (").Append(m.Files).Append(")\r\n");
                 File.AppendAllText(Path.Combine(AppInfo.DataDir, "sync-log.txt"), sb.ToString(), new UTF8Encoding(false));
             }
             catch { }

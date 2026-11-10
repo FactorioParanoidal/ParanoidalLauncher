@@ -42,13 +42,15 @@ namespace Paranoidal
         /// <summary>
         /// Puts the launcher into gameDir (no elevation): the exe unless a same or newer one is there, the data folder if
         /// it is next to the exe and the game folder has none, the guide if ours is newer. Returns the exe to start.
-        /// Throws (UnauthorizedAccessException and others) when the game folder cannot be written.
+        /// `otherGame`: the settings belong to another game (the launcher lay in a Factorio 2.0.77 folder): the copy
+        /// forgets that game, its mods folder and its build state (ForOtherGame). Throws (UnauthorizedAccessException and
+        /// others) when the game folder cannot be written.
         /// </summary>
-        public static string MoveTo(string srcExe, string dataDir, string gameDir, List<string> log)
+        public static string MoveTo(string srcExe, string dataDir, string gameDir, List<string> log, bool otherGame = false)
         {
             var srcDir = Path.GetDirectoryName(srcExe);
             var target = Path.Combine(gameDir, AppInfo.ExeName);
-            if (TargetIsSameOrNewer(gameDir)) log.Add("в папке игры уже есть лаунчер версии " + SelfUpdate.ExeVersion(target) + " — запускается он");
+            if (TargetIsSameOrNewer(gameDir)) log.Add("в папке игры уже есть лаунчер версии " + SelfUpdate.ExeVersion(target) + ", запускается он");
             else { SelfUpdate.InstallCopy(srcExe, gameDir); log.Add("лаунчер скопирован в " + target); }
 
             var targetData = Path.Combine(gameDir, AppInfo.DataDirName);
@@ -56,11 +58,11 @@ namespace Paranoidal
             {
                 if (!Directory.Exists(targetData))
                 {
-                    CopyData(dataDir, targetData, srcDir);
-                    log.Add("данные лаунчера скопированы в " + targetData);
+                    CopyData(dataDir, targetData, srcDir, otherGame);
+                    log.Add("данные лаунчера скопированы в " + targetData + (otherGame ? " (без путей и состояния прежней игры)" : ""));
                 }
             }
-            else AbsolutizeInPlace(dataDir, srcDir);   // %LOCALAPPDATA% data: the new exe reads it from there
+            else AbsolutizeInPlace(dataDir, srcDir, otherGame);   // %LOCALAPPDATA% data: the new exe reads it from there
 
             var guide = Path.Combine(srcDir, AppInfo.GuideFile);
             var targetGuide = Path.Combine(gameDir, AppInfo.GuideFile);
@@ -76,7 +78,7 @@ namespace Paranoidal
         /// Copies the launcher's data folder (not MinGit: it is unpacked again from the exe in seconds). settings.ini gets
         /// absolute paths: relative ones pointed from the old exe folder; the new exe makes paths inside its folder relative.
         /// </summary>
-        public static void CopyData(string from, string to, string oldExeDir)
+        public static void CopyData(string from, string to, string oldExeDir, bool otherGame = false)
         {
             Directory.CreateDirectory(to);
             foreach (var f in Directory.GetFiles(from))
@@ -92,24 +94,51 @@ namespace Paranoidal
                 try { CopyTree(d, Path.Combine(to, name)); } catch { }
             }
             var ini = Path.Combine(from, "settings.ini");
-            if (File.Exists(ini)) File.WriteAllText(Path.Combine(to, "settings.ini"), AbsolutePaths(File.ReadAllText(ini, Encoding.UTF8), oldExeDir), new UTF8Encoding(false));
+            if (File.Exists(ini)) File.WriteAllText(Path.Combine(to, "settings.ini"), Settle(File.ReadAllText(ini, Encoding.UTF8), oldExeDir, otherGame), new UTF8Encoding(false));
+        }
+
+        static string Settle(string ini, string oldExeDir, bool otherGame) => otherGame ? ForOtherGame(ini) : AbsolutePaths(ini, oldExeDir);
+
+        /// <summary>
+        /// Setting keys that belong to one game folder (its path, its mods folder and Space Age profile, the pin, the last
+        /// starts): also with a line suffix ("pin-2.1-sa").
+        /// </summary>
+        static readonly string[] GameKeys = { "factorio", "mods", "sa-root", "pin", "launch-build", "launch-build-prev", "load-diag-key", "migrating", "pick-install" };
+
+        /// <summary>A key of settings.ini that belongs to one game folder (GameKeys, also with a line suffix).</summary>
+        public static bool IsGameKey(string key) =>
+            GameKeys.Any(k => key.Equals(k, StringComparison.OrdinalIgnoreCase) || key.StartsWith(k + "-", StringComparison.OrdinalIgnoreCase));
+
+        /// <summary>settings.ini text without the keys of the previous game: the copy finds its own game and mods folder.</summary>
+        public static string ForOtherGame(string ini)
+        {
+            var sb = new StringBuilder();
+            foreach (var line in ini.Replace("\r\n", "\n").Split('\n'))
+            {
+                if (line.Length == 0) continue;
+                int i = line.IndexOf('=');
+                var key = i > 0 ? line.Substring(0, i).Trim() : "";
+                if (IsGameKey(key)) continue;
+                sb.Append(line).Append("\r\n");
+            }
+            return sb.ToString();
         }
 
         /// <summary>
         /// Before an elevated move: the new exe in a read-only game folder keeps its data in %LOCALAPPDATA%\ParanoidalUpdater,
         /// so the current data goes there (settings.ini replaced, paths absolute).
         /// </summary>
-        public static void PrepareLegacyData(string dataDir, string oldExeDir)
+        public static void PrepareLegacyData(string dataDir, string oldExeDir, bool otherGame = false)
         {
             var legacy = AppInfo.LegacyDataDir();
-            if (SameDir(dataDir, legacy)) AbsolutizeInPlace(dataDir, oldExeDir);
-            else CopyData(dataDir, legacy, oldExeDir);
+            if (SameDir(dataDir, legacy)) AbsolutizeInPlace(dataDir, oldExeDir, otherGame);
+            else CopyData(dataDir, legacy, oldExeDir, otherGame);
         }
 
-        static void AbsolutizeInPlace(string dataDir, string oldExeDir)
+        static void AbsolutizeInPlace(string dataDir, string oldExeDir, bool otherGame)
         {
             var ini = Path.Combine(dataDir, "settings.ini");
-            try { if (File.Exists(ini)) File.WriteAllText(ini, AbsolutePaths(File.ReadAllText(ini, Encoding.UTF8), oldExeDir), new UTF8Encoding(false)); }
+            try { if (File.Exists(ini)) File.WriteAllText(ini, Settle(File.ReadAllText(ini, Encoding.UTF8), oldExeDir, otherGame), new UTF8Encoding(false)); }
             catch { }
         }
 

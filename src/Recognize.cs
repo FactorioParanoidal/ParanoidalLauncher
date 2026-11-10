@@ -22,7 +22,7 @@ namespace Paranoidal
         /// <summary>The Factorio 1.1 build (Beta 8 and older): not recognised further, the launcher only warns.</summary>
         public bool Legacy => FactorioVersion != null && !FactorioVersion.StartsWith("2.");
         /// <summary>
-        /// A 2.x build of another line than the launcher's (a 2.0 build on the 2.1 line): it does not run on this game,
+        /// A 2.x build for another game than the launcher's line (a 2.0 build in a game updated to 2.1): it does not run on this game,
         /// is not recognised as an installed version, and an update switches it to the launcher's line.
         /// </summary>
         public bool OtherLine => Present && FactorioVersion != null && !Legacy && !Lines.Current.Matches(FactorioVersion);

@@ -6,13 +6,16 @@
 //     --info          change nothing: print the «Скопировать версию» line (RU and EN)
 //     --status        CheckStatus: recognition, offline state, rollback; prints the StatusInfo
 //     --rollback      «Откатить» / «Вернуть»
-//     --played        mark the installed version as played (as «ИГРАТЬ» does) and exit
-//     --prepare-play  what «ИГРАТЬ» does before the start: DLC in mod-list.json and the question about extra mods
-//   --line=2.0|2.1    any command: the build line (branch, game, DLC) instead of settings.ini line=…
-//   Harness.exe --migrate <old factorio dir> <mods dir> <old exe> <old data dir> <new factorio dir> [--run]
-//                    the plan of the move to 2.1 (Migration.Plan); --run runs it. Needs PARANOIDAL_LAUNCHER_TEST_APPDATA and
-//                    PARANOIDAL_LAUNCHER_TEST_SHORTCUTS; PARANOIDAL_LAUNCHER_TEST_MIGRATE_STOP=n stops after n steps
-//   Harness.exe --migrate-resume <plan file>   continues an interrupted move
+//     --played        mark the installed version as played (as «Играть» does) and exit
+//     --prepare-play  what «Играть» does before the start: DLC in mod-list.json and the question about extra mods
+//   --line=2.1|2.1-sa   any command: the build line (branch, game, DLC) instead of settings.ini line=…
+//   Harness.exe --profile <factorio dir> [--prepare]   GameProfile of the line: folders, config.ini, the game's command line;
+//                    --prepare writes the [path] of an own profile (only on a test stand!)
+//   Harness.exe --parse-host-line <line>   the build line and the game of a host's version line (VersionLine.ParseHostLine, HostGame)
+//   Harness.exe --sa-move <profile> <chosen folder> <main mods> <game dir> [--run] [--copy]   where «Выбрать…» on the
+//                    Space Age tab moves the profile (GameProfile.PlanMove); --run moves it, --copy as if to another disk
+//                    (set PARANOIDAL_LAUNCHER_DATA_DIR: the place is written to settings.ini)
+//   Harness.exe --other-game <settings.ini>   what the launcher's copy keeps when it moves from another game's folder (Relocation.ForOtherGame)
 //   Harness.exe --merge-config <old config.ini> <new config.ini|-> <out>   GameConfig.MergeForOtherInstall
 //   Harness.exe --loaddiag <current.log> [previous.log] [--tilde=mod1,mod2] [--build-changed]
 //   Harness.exe --loaddiag-selftest <load-logs-2.0.77.zip>    checks the verdicts on the reference logs
@@ -86,7 +89,18 @@ namespace Paranoidal
             if (lineOpt != null) Lines.Set(Lines.ById(lineOpt) ?? Lines.Current);
             argv = argv.Where(x => !x.StartsWith("--line=")).ToArray();
             Console.WriteLine("LAUNCHER " + AppInfo.Name + " " + AppInfo.Version + (AppInfo.TestOffline ? " (TEST OFFLINE)" : "") + " line=" + Lines.Current.Id + " branch=" + Lines.Current.Branch);
-            if (argv.Length > 0 && (argv[0] == "--migrate" || argv[0] == "--migrate-resume")) return MigrateTest(argv);
+            if (argv.Length > 0 && argv[0] == "--sa-move")
+            {
+                var mp = GameProfile.PlanMove(argv[1], argv[2], argv[3], argv[4]);
+                if (argv.Contains("--copy")) mp.SameVolume = false;
+                Console.WriteLine("PLAN to=" + mp.To + " same=" + mp.Same + " fromExists=" + mp.FromExists + " targetIsProfile=" + mp.TargetIsProfile +
+                    " sameVolume=" + mp.SameVolume + " bytes=" + mp.Bytes + " outsideGame=" + mp.OutsideGame + " error=" + (mp.ErrorEn ?? "-"));
+                if (!argv.Contains("--run") || mp.Error != null || mp.Same || mp.TargetIsProfile) return mp.Error != null ? 1 : 0;
+                GameProfile.Move(mp, (fr, d) => { }, l => Console.WriteLine("   " + l));
+                Console.WriteLine("MOVED sa-root=" + Settings.GetPath("sa-root") + " from-exists=" + Directory.Exists(mp.From) + " to-profile=" + GameProfile.IsProfile(mp.To));
+                return 0;
+            }
+            if (argv.Length > 0 && argv[0] == "--other-game") { Console.Write(Relocation.ForOtherGame(File.ReadAllText(argv[1]))); return 0; }
             if (argv.Length > 0 && argv[0] == "--merge-config")
             {
                 var merged = GameConfig.MergeForOtherInstall(File.ReadAllText(argv[1]), argv[2] == "-" ? null : File.ReadAllText(argv[2]));
@@ -98,6 +112,19 @@ namespace Paranoidal
             if (argv.Length > 0 && argv[0] == "--loaddiag-selftest") return LoadDiagSelfTest(argv[1]);
             if (argv.Length > 0 && argv[0] == "--report") return ReportTest(argv);
             if (argv.Length > 0 && argv[0] == "--parse-host") { Console.WriteLine("HOST " + (VersionLine.ParseHost(argv[1]) ?? "(none)")); return 0; }
+            if (argv.Length > 0 && argv[0] == "--parse-host-line") { var hl = VersionLine.ParseHostLine(argv[1]); Console.WriteLine("HOST-LINE " + (hl == null ? "(none)" : hl.Id) + " game=" + (VersionLine.HostGame(argv[1]) ?? "(none)")); return 0; }
+            if (argv.Length > 0 && argv[0] == "--profile")
+            {
+                var pf = FactorioInfo.Inspect(argv[1]);
+                var prof = GameProfile.Of(pf, Lines.Current);
+                if (prof == null) { Console.WriteLine("PROFILE (none)"); return 1; }
+                Console.WriteLine("PROFILE own=" + prof.Own + " root=" + (prof.Root ?? "-") + "\nCONFIG " + prof.ConfigPath + "\nWRITE-DATA " + prof.WriteData);
+                Console.WriteLine("MAIN-MODS " + GameProfile.MainMods(pf) + "\nSA-ROOT " + GameProfile.SpaceAgeRoot(pf) + " exists=" + GameProfile.SpaceAgeExists(pf));
+                var pm = prof.Own ? prof.Mods : GameProfile.MainMods(pf);
+                Console.WriteLine("ARGS " + prof.GameArgs(pm));
+                if (argv.Contains("--prepare")) { prof.PrepareConfig(); Console.WriteLine("PREPARED " + prof.ConfigPath + "\n" + File.ReadAllText(prof.ConfigPath)); }
+                return 0;
+            }
             if (argv.Length > 0 && argv[0].StartsWith("--") && ReleaseCommands(argv, out int rc)) return rc;
             if (argv.Length > 0 && argv[0] == "--paths")
             {
@@ -160,54 +187,6 @@ namespace Paranoidal
             }
             catch (OperationCanceledException) { Console.WriteLine("CANCELLED after " + (int)(DateTime.Now - t0).TotalSeconds + "s"); return 2; }
             catch (Exception ex) { Console.WriteLine("ERROR " + ex.Message); return 1; }
-        }
-
-        // ------------------------------------------------------------------ the move to 2.1
-
-        static int MigrateTest(string[] a)
-        {
-            if (string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("PARANOIDAL_LAUNCHER_TEST_APPDATA")) ||
-                string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("PARANOIDAL_LAUNCHER_TEST_SHORTCUTS")))
-            {
-                Console.WriteLine("set PARANOIDAL_LAUNCHER_TEST_APPDATA and PARANOIDAL_LAUNCHER_TEST_SHORTCUTS (the player's folders must not be touched)");
-                return 1;
-            }
-            MigrationPlan p;
-            if (a[0] == "--migrate-resume")
-            {
-                p = Migration.Load(a[1]);
-                if (p == null) { Console.WriteLine("NO PLAN " + a[1]); return 1; }
-                Console.WriteLine("RESUME done=" + p.Steps.Count(s => s.Done) + "/" + p.Steps.Count);
-            }
-            else
-            {
-                var oldFac = FactorioInfo.Inspect(a[1]);
-                var newFac = FactorioInfo.Inspect(a[5]);
-                Console.WriteLine("OLD " + (oldFac == null ? "(none)" : oldFac.Dir + " | " + oldFac.Describe(false, Lines.L20) + " ok20=" + oldFac.OkFor(Lines.L20)));
-                Console.WriteLine("NEW " + (newFac == null ? "(none)" : newFac.Dir + " | " + newFac.Describe(false) + " ok21=" + newFac.OkFor(Lines.L21) +
-                    " problem=" + (newFac.Problem(Lines.L21) ?? "-").Replace("\n", " ")));
-                if (oldFac == null || newFac == null) return 1;
-                p = Migration.Plan(oldFac, a[2], a[3], a[4], newFac, null);
-            }
-            Console.WriteLine("PLAN inPlace=" + p.InPlace + " sharedWd=" + p.SharedWd + " modsStay=" + p.ModsStay + " saves=" + p.Saves + " savesBytes=" + p.SavesBytes +
-                " modsBytes=" + p.ModsBytes + " cacheBytes=" + p.CacheBytes + " error=" + (p.Error ?? "-"));
-            Console.WriteLine("  oldWd=" + p.OldWd + " newWd=" + p.NewWd + " oldCfg=" + p.OldCfg + " newCfg=" + p.NewCfg + " newMods=" + p.NewMods + " newData=" + p.NewData);
-            foreach (var s in p.Steps) Console.WriteLine("  " + (s.Done ? "[x] " : "[ ] ") + Migration.Describe(s));
-            foreach (var s in p.Asides) Console.WriteLine("  ASIDE " + s);
-            Console.WriteLine("  PLAYER " + string.Join(", ", p.PlayerItems) + " | CACHE " + string.Join(", ", p.CacheItems));
-            if (p.Error != null || (a[0] == "--migrate" && !a.Contains("--run"))) return p.Error != null ? 1 : 0;
-            try
-            {
-                Migration.Run(p, l => Console.WriteLine("   done: " + l), (f, d) => { });
-                Migration.Finish(p);
-                Console.WriteLine("MIGRATED all steps done, plan file removed=" + !File.Exists(p.PlanFile));
-                return 0;
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine("STOPPED " + ex.Message + " | plan file kept=" + File.Exists(p.PlanFile) + " done=" + p.Steps.Count(s => s.Done) + "/" + p.Steps.Count);
-                return 2;
-            }
         }
 
         // ------------------------------------------------------------------ releases, guide, self-update, relocation

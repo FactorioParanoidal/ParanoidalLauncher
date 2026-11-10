@@ -77,6 +77,21 @@ namespace Paranoidal
             return list.Count == 1 && list[0].Sha != null ? list[0] : null;
         }
 
+        /// <summary>
+        /// The commit is in the history of the branch (the branch head or an older version of it); false also when GitHub
+        /// does not know one of them. Tells a bare commit id of the main 2.1 build from one of the Space Age build.
+        /// </summary>
+        public static bool InBranch(string branch, string sha)
+        {
+            try
+            {
+                var d = Get(Api + "/compare/" + Uri.EscapeDataString(branch) + "..." + Uri.EscapeDataString(sha) + "?per_page=1") as IDictionary<string, object>;
+                var status = d == null ? null : d["status"] as string;
+                return status == "behind" || status == "identical";
+            }
+            catch { return false; }
+        }
+
         public static List<CommitInfo> Recent(string branch, int count)
         {
             return Parse(Get(Api + "/commits?sha=" + Uri.EscapeDataString(branch) + "&per_page=" + count));
@@ -149,7 +164,7 @@ namespace Paranoidal
     /// <summary>The last list of build changes, shown when GitHub cannot be reached.</summary>
     static class CommitsCache
     {
-        static string FilePath => Path.Combine(AppInfo.DataDir, "commits-cache.txt");
+        static string FilePath => Path.Combine(AppInfo.DataDir, Lines.Key("commits-cache") + ".txt");
 
         public static void Save(List<CommitInfo> list)
         {

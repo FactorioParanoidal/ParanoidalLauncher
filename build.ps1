@@ -81,7 +81,8 @@ $refs = 'mscorlib', 'System', 'System.Core', 'System.Drawing', 'System.Windows.F
         'System.IO.Compression.FileSystem', 'System.Web.Extensions' | ForEach-Object { "/reference:$ref\$_.dll" }
 $cargs = @('/nologo', '/noconfig', '/nostdlib+', '/target:winexe', '/platform:anycpu', '/optimize+', '/deterministic+',
           '/langversion:latest', '/utf8output', '/nowarn:1701', "/win32icon:$ico", "/win32manifest:$manifest",
-          "/resource:$root\assets\splash.png,Paranoidal.splash.png",
+          "/resource:$root\assets\paranoidal-logo.gif,Paranoidal.paranoidal-logo.gif",
+          "/resource:$root\assets\space-age-plate.png,Paranoidal.space-age-plate.png",
           "/resource:$root\assets\gear.png,Paranoidal.gear.png",
           "/resource:$ico,Paranoidal.app.ico",
           "/resource:$minGit,Paranoidal.mingit.zip",

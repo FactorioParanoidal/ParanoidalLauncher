@@ -1,4 +1,4 @@
-# Paranoidal Launcher — instructions for agents
+# Paranoidal Launcher: instructions for agents
 
 Read this file in full before you change anything, then the sections of `README.md` that cover the code you touch.
 `README.md` (Russian, kept short) is the contract of every feature; this file adds the working rules, the decisions behind the
@@ -8,12 +8,14 @@ these documents are in English; texts players see are RU/EN; `README.md` and `CH
 ## 1. What it is
 
 - One Windows exe for players of the Factorio modpack **Paranoidal** (repository
-  `FactorioParanoidal/ParanoidalModpack`; `AppInfo.Owner/RepoName`). Since 1.3.0 it serves one of two **build lines**
-  (`src/Lines.cs`, `settings.ini` `line=`): Paranoidal 2.1 (branch `pre_release_2.1`, Factorio 2.1.x not older than
-  the `base >= …` of zzzparanoidal, DLC incl. recycler) and Paranoidal 2.0 (branch `pre_release_2.0`, exactly 2.0.77).
-- It installs and updates the game's `mods\` from the branch of its line, checks the game and starts it with
-  `--mod-directory`. Since 1.4.0 the 2.0 line is not served: its player moves to 2.1 at the start (`MainForm.ForceMigration`,
-  `src/Migration.cs`).
+  `FactorioParanoidal/ParanoidalModpack`; `AppInfo.Owner/RepoName`). Since 1.5.0 it serves two **builds** of one game
+  (`src/Lines.cs`, `settings.ini` `line=`): Paranoidal 2.1 (branch `pre_release_2.1`, Factorio 2.1.x not older than the
+  `base >= …` of zzzparanoidal, DLC incl. recycler) and Paranoidal 2.1 Space Age (`2.1-sa`, branch
+  `pre_release_2.1_space_age`) in a profile of its own (`src/Profile.cs`, rule 19). The player picks one in the start
+  window or with the build tabs (rule 16). Builds for Factorio 2.0 are not served (1.3.0 had the 2.0 line, 1.4.0 moved
+  its players; 1.4.0 was never released).
+- It installs and updates the game's `mods\` from the branch of the build, checks the game and starts it with
+  `--mod-directory`.
 - Players have no git, no tokens and no technical skills. "Put the exe next to the game and press one button" is
   the whole user story; every feature must keep it that way.
 - Stack: C# for .NET Framework 4.8 WinForms (present in every Windows 10/11, nothing to install), compiled by Roslyn
@@ -25,11 +27,14 @@ these documents are in English; texts players see are RU/EN; `README.md` and `CH
 | Path | Role |
 |---|---|
 | `src/AppInfo.cs` | version (single source), repo, Discord link, data folder, `Settings` (`settings.ini`), `MaskUser` |
-| `src/Lines.cs` | build lines 2.0/2.1: branch, required game (`MinGame`, `Fits`), DLC and their `mod-list.json` states; `Lines.Current`, `Lines.Retired` (2.0) |
-| `src/Migration.cs` | the move to 2.1: plan, steps with a plan file (continues after an interruption), config merge, cross-disk copy; started by `MainForm.ForceMigration` |
+| `src/Lines.cs` | builds 2.1 / 2.1-sa: branch, game (`Game`, `MinGame`, `Fits`), DLC and their `mod-list.json` states; `Lines.Current`, `Lines.Key` (per-build setting keys) |
+| `src/Profile.cs` | `GameProfile`: config.ini and write-data of the line's game (Space Age: own folder, `--config`), the first switch to Space Age (plan, copies, base from the 2.1 build) |
 | `src/Program.cs` | entry point, assembly attributes from `AppInfo` |
-| `src/MainForm.cs` | the window: cards (build, Factorio, mods folder), buttons, tabs «Что нового» / «Изменённые моды» / «Журнал» |
-| `src/Ui.cs`, `src/Dialogs.cs` | dark Factorio-like theme, buttons, cards; report and host-version dialogs |
+| `src/MainForm.cs` | the window: the start (game search, relocation, `StartPanel` views), the build tabs, panes (build, Factorio and mods folder, actions), tabs «Что нового» / «Изменённые моды» / «Журнал» |
+| `src/StartScreen.cs` | `LogoArt` (the animated logo, one GIF for every view), `BuildCard`, `LineTab`, `StartPanel` (choice of the build / no suitable Factorio / wait) |
+| `src/FolderPicker.cs` | the Explorer-style folder picker (`IFileOpenDialog`, `FOS_PICKFOLDERS`), FolderBrowserDialog as the fallback |
+| `src/Controls.cs` | the vanilla Factorio look (rule 20): `Theme` (colours of the 2.1.24 GUI atlas, fonts, tooltips), `FButton`, `Card` (pane), `StatusLine`, `HeaderPanel`, `FProgress`, `DarkDialog` |
+| `src/Ui.cs`, `src/Dialogs.cs` | native helpers (dark title bar), the Discord mark, single instance; dialogs with input (report, host's version, choice of installation, Space Age) |
 | `src/Tr.cs` | RU/EN: `Tr.T("русский", "English")` at the place of use |
 | `src/Sync.cs` | `SyncEngine`: status, update, «Проверить файлы», parallel blob download, extra mods, start preparation |
 | `src/Git.cs` | runs the bundled git with an isolated environment, kill handle for the download watchdog |
@@ -37,19 +42,19 @@ these documents are in English; texts players see are RU/EN; `README.md` and `CH
 | `src/Recognize.cs` | recognising a build already in `mods\` by content (no network needed) |
 | `src/Rollback.cs` | one step back/forward without internet (difference only) |
 | `src/VersionLine.cs` | «Скопировать версию» line, parsing the host's line, `mod-settings.dat` reader/fingerprint |
-| `src/Factorio.cs` | finding installations, game version and DLC check per line, where to get 2.1 |
+| `src/Factorio.cs` | finding installations (`PARANOIDAL_LAUNCHER_TEST_GAMES` for tests), game version and DLC check per build, where to get 2.1 |
 | `src/ModList.cs` | DLC entries of `mod-list.json` |
 | `src/GameConfig.cs` | load cache keys in the `config.ini` the game reads; warning about `~` dependencies |
 | `src/LoadDiag.cs` | load diagnostics from `factorio-current/previous.log` |
 | `src/Report.cs` | «Отчёт о проблеме» ZIP |
 | `src/Releases.cs` | release.json of the launcher's and the guide's GitHub Releases, verified downloads (size + SHA-256) |
 | `src/SelfUpdate.cs` | self-update file swap (exe -> .old, new -> exe, restart), elevated helper `--install-exe`, `StartArgs` |
-| `src/Relocation.cs` | moving the launcher into the game folder, cleanup of the old place, `Shortcuts` (IShellLink) |
+| `src/Relocation.cs` | moving the launcher into the game folder (`ForOtherGame`: the copy forgets another game's settings), cleanup of the old place, `Shortcuts` (IShellLink) |
 | `src/Guide.cs` | the one-file guide next to the exe: local version, install, open |
 | `tools/` | `Harness.cs` (console driver of the engine), `UiShot.cs` (dialogs and the window to PNG), `snap.ps1`, `testdata/`, `release-manifest.ps1` (release.json) |
 | `publish.ps1` | the release: checks, build, tag, push, GitHub Release, live check (`-DryRun` first) |
 | `docs/factorio-load-cache.md` | measured behaviour of the 2.0.77 load cache: the basis of `LoadDiag` and `GameConfig` |
-| `assets/` | `splash.png` (logo), `gear.png` (icon source), embedded by `build.ps1` |
+| `assets/` | `paranoidal-logo.gif` (animated logo), `space-age-plate.png` (from the game's Space Age logo), `gear.png` (icon source), embedded by `build.ps1` |
 | `vendor/` | MinGit zip (checked by SHA-256 in `build.ps1`) and its licence |
 
 ## 3. Versions, build, release
@@ -89,8 +94,10 @@ Each one was chosen after a real problem; the reasons are what you need when a "
    content fingerprint, not by a marker file in `zzzparanoidal`).
 5. **Player files are not touched**: saves, `mod-settings.dat`, `player-data.json`, zip mods, mods the player chose to
    keep. Only the DLC entries of `mod-list.json` are set (quality and elevated-rails on, 2.1 also recycler, space-age
-   off: the modpack is played without Space Age content) and only the three cache keys of the game `config.ini` (with
-   one backup). The one exception is the move to 2.1 the player confirms (item 16): it moves them, never overwrites.
+   off: the main build is played without Space Age content; the Space Age profile switches all four on) and only the
+   three cache keys of the game `config.ini` (with one backup). The exception the player confirms: the first switch
+   to Space Age (item 19) copies some of them into the profile, never overwrites. Saves of a 2.0 game are not moved
+   (owner, 2026-11-10).
 6. **One question, no jargon.** No branch names or git words in the window; an update asks once and shows what changes.
 7. **Journal, `sync-log.txt`, `crash.txt` and the report stay Russian** in both interface languages: the team reads
    them. Default interface language: Russian for the 15 post-Soviet countries (UI language or region), else English.
@@ -99,7 +106,7 @@ Each one was chosen after a real problem; the reasons are what you need when a "
 9. **Rollback keeps only the difference** of one step and goes back to the version the game was last *played* with;
    it works offline and «Вернуть» goes forward again. «Не менять версию» and «Версия хоста…» cover hosts that did not
    update yet, saves broken by an update and series on one version.
-10. **Offline is a normal state**: «ИГРАТЬ», rollback, report, diagnostics and recognition must work without GitHub;
+10. **Offline is a normal state**: «Играть», rollback, report, diagnostics and recognition must work without GitHub;
     network waits are short (20 s for the head check).
 11. **Data next to the exe** (`ParanoidalLauncher-data`), relative paths inside the exe folder: a whole game folder can
     be copied to another computer or over the LAN and keeps working.
@@ -109,32 +116,61 @@ Each one was chosen after a real problem; the reasons are what you need when a "
 13. **The launcher lives in the game folder** (owner's decision, 2026-10-28): it moves itself there silently (exe,
     data without MinGit, guide; desktop shortcut; the copy removes the old place) and asks for administrator rights
     only when that fails, recommending to move the game out of Program Files. Only the files the launcher owns are
-    removed from the old place. Off for tests and the developer's `dist`/`obj` (`Relocation.DisabledReason`).
+    removed from the old place. Off for tests and the developer's `dist`/`obj` (`Relocation.DisabledReason`). Since
+   1.5.0 the game of `settings.ini` is used only when it fits; otherwise every installation is searched, so a launcher
+   that lies in a Factorio 2.0.77 folder moves into the 2.1 game, and its copy forgets the settings of the old game
+   (`Relocation.ForOtherGame`, `MainForm.ForgetOtherGame`). «Не сейчас» in the choice of installation keeps the
+   launcher where it is and the next start asks again (`pick-install=1`; before 1.5.0 the next start moved silently
+   into the game used meanwhile).
 14. **The guide is a local file** next to the exe, updated together with the build (owner's decision): the button
     opens only the local copy; a guide update is offered with the build update, and logged as a highlighted line.
 15. **The modpack's load cache.** The launcher turns the game's cache on before every start; any change of
     `mod-settings.dat` (also per-user settings changed in game) and any enabled mod with a `~` dependency make
     Factorio 2.0.77 rebuild the data stage (the `~` bug is in 2.1.24 too). Facts and log markers: `docs/factorio-load-cache.md`.
-16. **Two build lines, the move to 2.1** (owner's decisions, 2026-11-04; README «Линии сборки»): one exe serves both lines
-    (one `releases/latest` for everybody); new players get 2.1 as if there were no 2.0. 2.1 needs the game
-    version of the build or newer within 2.1 ("не ниже"), 2.0 stays exactly 2.0.77. The move **moves** (not copies)
-    saves, settings, the build and the launcher; the player's own mods go as they are and are asked about at the
-    update; everything the launcher brought is removed from the 2.0 folder (the window says so); «Оставить» answers,
-    the 2.0 rollback and the pin are reset; no backup of saves. Nothing in the 2.1 folder is overwritten
-    (`*.before-paranoidal`, « (2.0)» for saves).
-    **The forced move** (owner, 2026-11-10, 1.4.0; replaces "the 2.0 line is kept until the team decides"): the 2.0 line
-    is not served (`Lines.Retired`: no update, check of files, rollback, pin, host's version, no «Paranoidal 2.1»
-    button). After every status check with a connection the move windows open with only «Далее»/«Переехать» and
-    «Выйти» (closes the launcher; never move silently); no 2.1 game found: the window says where to get it and the
-    build cannot be played; no connection: no move, the 2.0 build can be played; a running game postpones the move.
-    The branch `pre_release_2.0` stays for launchers 1.2.0–1.3.0 whose players declined the self-update: freezing or
-    removing it is a separate team decision.
+16. **Only Factorio 2.1; the start window** (owner, 2026-11-10, 1.5.0; README «Сборки и окно выбора»; replaces the
+    2.0 line of 1.3.0 and the forced move of 1.4.0, which was never released). No word about 2.0 in the window.
+    `line=2.0` of older launchers becomes 2.1 and its pin goes (`MainForm.ForgetLine20`); a 2.0 build in the mods
+    folder of a game updated to 2.1 is updated like any old build; saves of a 2.0 game are not moved. The start: the
+    game (search, relocation), then the start window: no suitable game → what was found (2.1 without the expansion,
+    an older game, nothing), where to get 2.1, «Закрыть» (closes the launcher) / «Выбрать папку игры…» / «Проверить
+    снова»; otherwise two cards (2.1, Space Age «в активной разработке») and «Запомнить выбор» (off by default,
+    `ask-build=0`). The main window has the build tabs under the header and «Спрашивать сборку при запуске» at
+    their right; `line` remembers the last build. The approved mockup:
+    https://expertlove.github.io/paranoidal-space-age/launcher.html (workspace `test-runs/launcher150-20261110/mockup/`).
+    The branch `pre_release_2.0` stays only for launchers 1.2.0 and 1.3.0 whose players declined the self-update.
 17. **Questions only about the player's files** (owner, 2026-11-04): folders the build itself removed or renamed are
     removed by the update without a question (and kept for the rollback: do not delete them before
     `SaveForRollback`); folders of any known build version and earlier «Оставить» answers about them go without a
     question; «Лишние моды» lists only what never was in the build.
 18. **A second start shows the running launcher** (owner, 2026-11-04): the message «уже запущен» stays, the window of
     the first one is restored and brought to the front (registered window message, also through UIPI).
+19. **Space Age is a profile of its own** (owner, 2026-11-10, 1.5.0; README «Space Age»): chosen in the start window
+    or with the tab «Paranoidal 2.1 Space Age», labelled "в активной разработке" (never "may break"). The profile is
+    the folder `Paranoidal-SpaceAge`
+    next to the main mods folder (rule 11), the game is started with `--config <profile>\config\config.ini` whose
+    `[path]` write-data is rewritten to the profile before every start (an absolute path, as in the team's own SA
+    setup). **Nothing is installed or updated without the player's «Установить»/«Обновить»** (owner, 2026-11-10):
+    choosing a build in the start window or with a tab only opens it and checks its status. «Установить» on the
+    Space Age tab without a profile opens one window with what is copied once (game settings with the profile's
+    `[path]`, `mod-settings.dat`, `mod-list.json`, `player-data.json`, blueprints), «Скопировать сейвы основной сборки»
+    as a check box with their number and size (off by default), the disk space; the installed 2.1 build is copied as
+    the base (`SyncEngine.Seeded`) so only the difference downloads. «Выбрать…» of the mods folder on the Space Age
+    tab moves the whole profile to `<chosen folder>\Paranoidal-SpaceAge` (owner, 2026-11-10; the default stays in the
+    game folder): a rename on the same disk, a copy into `.partial` then the deletion of the old folder on another one;
+    an existing profile there is used after a question (nothing overwritten); without an installed build only `sa-root`
+    changes (`GameProfile.PlanMove`/`Move`, `Harness --sa-move`). Space Age is simply
+    switched on in the profile's `mod-list.json` (both builds need the expansion: the launcher accepts no game without it).
+    «Скопировать версию»/«Версия хоста» tell "2.1" from "2.1 Space Age" (bare ids: by the branch on GitHub).
+20. **The window looks like a vanilla Factorio window** (owner, 2026-11-10, 1.5.0): made with the workspace skill
+    `.pi/skills/factorio-gui-design` (colours sampled from the 2.1.24 GUI atlas, panes with a subheader band, 12 px
+    spacing, grey buttons with black text, one green button for the next action, red for destructive answers, back on
+    the left and confirm on the right in dialogs, status dots, sentence case, three text sizes; the logo header is the
+    one distinctive element). The logo is the animated PARANOIDAL GIF made by the team (owner, 2026-11-10; no author
+    credit), for Space Age with the SPACE AGE plate cut from the game's logo; no "2.1" in the logo. Folder choice is the
+    Explorer-style window (`FolderPicker`), never FolderBrowserDialog. Every text the player sees follows the humanizer rules
+    (https://github.com/blader/humanizer): no em/en dashes as connectors, no glyphs as decoration, no ALL CAPS, no
+    "not X but Y", plain verbs. Check new texts with `test-runs/launcher150-20261110/tools/literals.py` of the workspace
+    (string literals with dashes or glyphs) and new windows with UiShot pictures.
 
 ## 5. Testing
 
@@ -144,11 +180,16 @@ Each one was chosen after a real problem; the reasons are what you need when a "
   `git archive <commit> mods | tar -x` from a clone of the modpack.
 - `obj/Harness.exe --loaddiag-selftest tools/testdata/load-logs-2.0.77.zip` must print `SELFTEST OK` after any change
   of `LoadDiag.cs`/`GameConfig.cs`.
-- The move to 2.1: `Harness --migrate` on fake game folders (`bin\x64\factorio.exe` stub, `data\<mod>\info.json` with
-  the version, `config-path.cfg`), with `PARANOIDAL_LAUNCHER_TEST_APPDATA` and `PARANOIDAL_LAUNCHER_TEST_SHORTCUTS`
-  (the harness refuses without them), interruptions with `PARANOIDAL_LAUNCHER_TEST_MIGRATE_STOP`; end to end with
-  `TEST_AUTO` + `PARANOIDAL_LAUNCHER_TEST_MIGRATE` + `PARANOIDAL_LAUNCHER_NO_RELOCATE=1`. Stands and scripts of the
-  1.3.0 tests: `test-runs/launcher130-20261104/` of the workspace.
+- The start: end to end with `TEST_AUTO` + `PARANOIDAL_LAUNCHER_TEST_PICK=21|sa` (the start window) +
+  `PARANOIDAL_LAUNCHER_TEST_GAMES=<fake games>|-` (the search sees only them: without it a test launcher that searches
+  finds the real games and may move into them) + `PARANOIDAL_LAUNCHER_TEST_SHORTCUTS`; relocation on only with
+  `TEST_GAMES`. Stands and script: `test-runs/launcher150-20261110/tools/e2e150b.py` of the workspace (pick 2.1, pick
+  Space Age, remembered choice, the first Space Age install from the start window, a launcher in a 2.0.77 folder with
+  a 2.1 game elsewhere, no suitable game). `Harness --other-game <settings.ini>` shows what a moved copy keeps.
+- Space Age: `Harness --profile <game> [--prepare] --line=2.1-sa` (paths, `--config`, the `[path]` written) on a fake
+  game folder; end to end `TEST_AUTO` + `PARANOIDAL_LAUNCHER_TEST_SWITCH=sa|21` (a tab) + `PARANOIDAL_LAUNCHER_TEST_INSTALL=1`
+  (press «Установить»/«Обновить») + `NO_RELOCATE=1` on a copy of a 2.1 player's folder (`e2e150b.py`: browse,
+  picksa0, switch21 check that a choice or a tab installs nothing; freshsa installs Space Age with «Установить»).
 - Releases, self-update and relocation: a local fake GitHub (`python -m http.server` over
   `FactorioParanoidal/<repo>/releases/latest/download/release.json` + `releases/download/vX.Y.Z/<file>`, the manifest
   from `tools/release-manifest.ps1`, a second launcher built from a copy of the sources with a higher version) and
@@ -160,8 +201,9 @@ Each one was chosen after a real problem; the reasons are what you need when a "
   folder there the status check would create `.paranoidal-git` in it. This holds for every test that starts the exe,
   also a short single-instance one (1.3.0 tests: one such start read the real 2.1.24 install, nothing was written
   because it has no `mods`). The UAC path cannot be automated: say so in the handoff.
-- Dialogs: `tools/build-uishot.ps1` renders them to PNG without showing them. Do not click the window with posted
-  messages and never take the focus from a running game.
+- Dialogs, the start window views and the main window of both builds: `tools/build-uishot.ps1` renders them to PNG without showing them
+  (`Dialogs.TestSnapshot`, `DarkDialog.TestSnapshot`). Review the pictures at 100 % against rule 20. Do not click the
+  window with posted messages and never take the focus from a running game.
 - **Never** use the player's real game folder, `%APPDATA%\Factorio`, saves, `mod-list.json` or `mod-settings.dat` for
   tests, and never kill a game you did not start. Real game launches (e.g. new reference logs after a game update)
   only with the owner's permission, in an isolated copy with its own write-data (`--config`), closed with WM_CLOSE.
@@ -170,22 +212,7 @@ Each one was chosen after a real problem; the reasons are what you need when a "
 - When the game version changes: re-measure the cache markers (`docs/factorio-load-cache.md`), update
   `BuildLine.DefaultMin` in `src/Lines.cs` (the 2.1 line also follows `base >= …` of zzzparanoidal) and the reference logs.
 
-## 6. Planned and ideas
-
-**Planned for 1.5.0** (owner, 2026-11-10; a release of its own after 1.4.0): a **Space Age** line on the branch
-`pre_release_2.1_space_age` of the modpack. Agreed: the header button in the place of the former «Paranoidal 2.1»,
-for every 2.1 player, labelled "в активной разработке" (never "may break"); inside the Space Age profile the same place
-holds «Paranoidal 2.1» to go back. A separate profile in the same game installation: its own mods, saves and settings
-in one folder inside the game folder (rule 11: the game folder stays copyable), the game started with its own
-`--config`/write-data (to be verified before the design is final: game behaviour, where the cache keys go). First
-switch: copy the graphics/controls settings and `mod-settings.dat` once; offer to copy the 2.1 saves with a check box
-and their size (copies; 2.1 saves load in the Space Age build before the rocket, modpack ПР-080). Space Age is simply
-switched on in `mod-list.json` (rule 5 changes for this line), with a one-line hint "нужно дополнение Space Age" when
-the game has no Space Age. Only the active profile is updated; the other one when the player switches to it; reuse the
-objects of the other profile so only the difference downloads (to be measured), about +1 GB build and +1 GB cache.
-«Скопировать версию» and «Версия хоста» tell "2.1" from "2.1 Space Age".
-
-**Ideas not done yet**
+## 6. Ideas not done yet
 
 Proposed by agents and discussed with the team; none is approved as a plan. Ask before starting one.
 
@@ -201,6 +228,7 @@ Proposed by agents and discussed with the team; none is approved as a plan. Ask 
 - After-start behaviour (tray / close / nothing), a link to the modpack FAQ (Discord is a button since 1.3.0), starting
   Steam installs through Steam (`-applaunch 427520`) if direct start proves unreliable there.
 - The owner declined a backup of saves for the move to 2.1 (2026-11-04); the idea above is about build updates only.
+- A "2.1" drawn in the style of the animated logo, if its author makes one (owner, 2026-11-10: no "2.1" in the logo for now).
 
 ## 7. Working rules
 

@@ -44,7 +44,18 @@ namespace Paranoidal
             public string SaveAdded;
         }
 
-        public static string WriteData(FactorioInfo fac) => fac == null ? null : GameConfig.ResolveWriteData(fac.Dir, fac.Exe);
+        /// <summary>The data folder of the game of the current line (the Space Age profile has its own).</summary>
+        public static string WriteData(FactorioInfo fac)
+        {
+            var prof = GameProfile.Of(fac, Lines.Current);
+            return prof == null ? null : prof.WriteData;
+        }
+
+        static string ConfigPath(FactorioInfo fac)
+        {
+            try { var prof = GameProfile.Of(fac, Lines.Current); return prof == null ? null : prof.ConfigPath; }
+            catch { return null; }
+        }
 
         /// <summary>Newest save of the game: a manual one or an autosave (_autosave*.zip). Null when there is none.</summary>
         public static FileInfo LastSave(FactorioInfo fac, bool autosave)
@@ -107,9 +118,7 @@ namespace Paranoidal
                     }
                     if (inp.Fac != null)
                     {
-                        string cfg = null;
-                        try { cfg = GameConfig.ResolveConfigPath(inp.Fac.Dir, inp.Fac.Exe); } catch { }
-                        file("factorio/config.ini", cfg, true);
+                        file("factorio/config.ini", ConfigPath(inp.Fac), true);
                     }
                     if (inp.ModsDir != null)
                     {
@@ -146,8 +155,8 @@ namespace Paranoidal
                             // saves are compressed already: stored as is, plus the zip directory
                             if (fs.Length + size + 64 * 1024 > Limit)
                             {
-                                res.SaveSkippedRu = "сейв «" + Path.GetFileName(path) + "» (" + Fmt.SizeRu(size) + ") не помещается в 20 МБ — приложите его отдельно: " + AppInfo.MaskUser(path);
-                                res.SaveSkippedEn = "the save \"" + Path.GetFileName(path) + "\" (" + Fmt.Size(size) + ") does not fit into 20 MB — attach it separately: " + AppInfo.MaskUser(path);
+                                res.SaveSkippedRu = "сейв «" + Path.GetFileName(path) + "» (" + Fmt.SizeRu(size) + ") не помещается в 20 МБ, приложите его отдельно: " + AppInfo.MaskUser(path);
+                                res.SaveSkippedEn = "the save \"" + Path.GetFileName(path) + "\" (" + Fmt.Size(size) + ") does not fit into 20 MB; attach it separately: " + AppInfo.MaskUser(path);
                             }
                             else
                             {
@@ -223,11 +232,11 @@ namespace Paranoidal
 
         static string Readme() =>
             "Отчёт о проблеме Paranoidal Launcher " + AppInfo.Version + ", создан " + DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss") + ".\n\n" +
-            "version.txt — строка версии (как «Скопировать версию»), состояние сборки, игра и пути.\n" +
-            "factorio/ — логи игры (текущий и предыдущий запуск), config.ini игры, свежие дампы падений.\n" +
-            "mods/ — mod-list.json, mod-settings.dat, моды не из сборки, изменённые файлы сборки.\n" +
-            "launcher/ — журнал лаунчера этого сеанса, sync-log.txt, crash.txt, settings.ini, история диагностики загрузки.\n" +
-            "saves/ — сейв, если его выбрали и он поместился в 20 МБ.\n\n" +
+            "version.txt: строка версии (как «Скопировать версию»), состояние сборки, игра и пути.\n" +
+            "factorio/: логи игры (текущий и предыдущий запуск), config.ini игры, свежие дампы падений.\n" +
+            "mods/: mod-list.json, mod-settings.dat, моды не из сборки, изменённые файлы сборки.\n" +
+            "launcher/: журнал лаунчера этого сеанса, sync-log.txt, crash.txt, settings.ini, история диагностики загрузки.\n" +
+            "saves/: сейв, если его выбрали и он поместился в 20 МБ.\n\n" +
             "Не включено: player-data.json (в нём токен аккаунта Factorio). Имя пользователя Windows в путях заменено на %USERPROFILE% / %USERNAME%.\n";
 
         static string VersionText(Input inp, string wd)
@@ -238,12 +247,13 @@ namespace Paranoidal
             if (inp.LoadDiag != null) sb.Append("Диагностика загрузки:\n").Append(inp.LoadDiag.TrimEnd()).Append("\n\n");
             if (inp.Fac != null)
             {
-                sb.Append("Factorio: ").Append(inp.Fac.Describe(false)).Append(inp.Fac.Ok ? " (подходит)" : " (НЕ подходит: нужна " + AppInfo.RequiredGame + ")").Append('\n');
+                sb.Append("Factorio: ").Append(inp.Fac.Describe(false)).Append(inp.Fac.Ok ? " (подходит)" : " (не подходит, нужна " + AppInfo.RequiredGame + ")").Append('\n');
                 sb.Append("Папка игры: ").Append(inp.Fac.Dir).Append('\n');
                 sb.Append("Установка: ").Append(GameConfig.InstallKind(inp.Fac.Dir, inp.Fac.Exe)).Append('\n');
-                try { sb.Append("config.ini: ").Append(GameConfig.ResolveConfigPath(inp.Fac.Dir, inp.Fac.Exe)).Append('\n'); } catch { }
+                var cfg = ConfigPath(inp.Fac);
+                sb.Append("config.ini: ").Append(cfg ?? "?").Append(Lines.Current.SpaceAge ? " (профиль Space Age, игра запускается с --config)" : "").Append('\n');
                 sb.Append("Папка данных игры: ").Append(wd ?? "?").Append('\n');
-                var cache = GameConfig.CacheEnabled(inp.Fac.Dir, inp.Fac.Exe);
+                var cache = cfg == null ? null : GameConfig.CacheEnabledAt(cfg);
                 sb.Append("Кэш загрузки в config.ini: ").Append(cache == null ? "нет config.ini" : cache.Value ? "включён" : "выключен").Append('\n');
             }
             else sb.Append("Factorio: не найдена\n");

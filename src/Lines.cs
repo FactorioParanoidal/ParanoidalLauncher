@@ -4,31 +4,39 @@ using System.Text.RegularExpressions;
 namespace Paranoidal
 {
     /// <summary>
-    /// One line of the build: Paranoidal for one Factorio version (major.minor). The launcher serves one line at a time
-    /// (settings.ini line=2.0|2.1, Lines.Current). Since 1.4.0 the 2.0 line is not served (Lines.Retired): its player moves
-    /// to 2.1 at the start (MainForm.ForceMigration, Migration.cs). README «Линии сборки».
+    /// One line of the build: Paranoidal 2.1 and, since 1.5.0, Paranoidal 2.1 Space Age on the same game. The launcher
+    /// serves one line at a time (settings.ini line=2.1|2.1-sa, Lines.Current; the player picks it in the start window or
+    /// with the tabs). The Space Age line lives in a profile of its own (GameProfile). Since 1.5.0 the launcher knows no
+    /// 2.0 line: a build for another game in mods\ is updated to 2.1 like any other old build (BuildFound.OtherLine).
+    /// README «Сборки».
     /// </summary>
     sealed class BuildLine
     {
-        /// <summary>"2.0" / "2.1": major.minor of the game and the factorio_version of the build's mods.</summary>
+        /// <summary>"2.1" / "2.1-sa": the line in settings.ini and in setting keys.</summary>
         public readonly string Id;
+        /// <summary>"2.1": major.minor of the game and the factorio_version of the build's mods.</summary>
+        public readonly string Game;
         public readonly string Branch;
         /// <summary>The game version the build needs when its own requirement is not known (offline, nothing installed).</summary>
         public readonly string DefaultMin;
-        /// <summary>2.0: exactly DefaultMin. 2.1: the version zzzparanoidal requires (base >= x.y.z) or newer within 2.1.</summary>
+        /// <summary>Exactly DefaultMin (no line uses it since 1.5.0); otherwise the version zzzparanoidal requires (base >= x.y.z) or newer within the game.</summary>
         public readonly bool Exact;
+        /// <summary>The Space Age line: the expansion is switched on, own profile (mods, saves, settings).</summary>
+        public readonly bool SpaceAge;
         /// <summary>Expansion mods in data\ that must have the game's version.</summary>
         public readonly string[] Dlc;
         /// <summary>DLC entries of mod-list.json and the state the build needs (other entries are never touched).</summary>
         public readonly KeyValuePair<string, bool>[] DlcStates;
         string required;
 
-        public BuildLine(string id, string branch, string defaultMin, bool exact, string[] dlc, KeyValuePair<string, bool>[] states)
+        public BuildLine(string id, string game, string branch, string defaultMin, bool exact, bool spaceAge, string[] dlc, KeyValuePair<string, bool>[] states)
         {
             Id = id;
+            Game = game;
             Branch = branch;
             DefaultMin = defaultMin;
             Exact = exact;
+            SpaceAge = spaceAge;
             Dlc = dlc;
             DlcStates = states;
         }
@@ -42,8 +50,8 @@ namespace Paranoidal
             if (Releases.IsVersion(version) && Matches(version)) required = version;
         }
 
-        /// <summary>A game version ("2.1.24") or a factorio_version ("2.1") of this line.</summary>
-        public bool Matches(string version) => MajorMinor(version) == Id;
+        /// <summary>A game version ("2.1.24") or a factorio_version ("2.1") of this line's game.</summary>
+        public bool Matches(string version) => MajorMinor(version) == Game;
 
         /// <summary>The build of this line runs on this game version.</summary>
         public bool Fits(string gameVersion) =>
@@ -57,10 +65,11 @@ namespace Paranoidal
         {
             bool e = en ?? Tr.En;
             if (Exact) return (e ? "exactly " : "строго ") + MinGame;
-            return MinGame + (e ? " or newer (" : " или новее (") + Id + ".x)";
+            return MinGame + (e ? " or newer (" : " или новее (") + Game + ".x)";
         }
 
-        public string Name => "Paranoidal " + Id;
+        /// <summary>"Paranoidal 2.1" / "Paranoidal 2.1 Space Age": the same in both languages, also in the version line.</summary>
+        public string Name => "Paranoidal " + Game + (SpaceAge ? " Space Age" : "");
 
         public static string MajorMinor(string version)
         {
@@ -71,18 +80,10 @@ namespace Paranoidal
 
     static class Lines
     {
-        public static readonly BuildLine L20 = new BuildLine("2.0", "pre_release_2.0", "2.0.77", true,
-            new[] { "space-age", "quality", "elevated-rails" },
-            new[]
-            {
-                new KeyValuePair<string, bool>("space-age", false),
-                new KeyValuePair<string, bool>("quality", true),
-                new KeyValuePair<string, bool>("elevated-rails", true),
-            });
+        static readonly string[] Dlc21 = { "space-age", "quality", "elevated-rails", "recycler" };
 
         /// <summary>Quality 2.1 depends on the recycler mod, so it is switched on too (ПР-069 of the modpack).</summary>
-        public static readonly BuildLine L21 = new BuildLine("2.1", "pre_release_2.1", "2.1.24", false,
-            new[] { "space-age", "quality", "elevated-rails", "recycler" },
+        public static readonly BuildLine L21 = new BuildLine("2.1", "2.1", "pre_release_2.1", "2.1.24", false, false, Dlc21,
             new[]
             {
                 new KeyValuePair<string, bool>("space-age", false),
@@ -91,13 +92,28 @@ namespace Paranoidal
                 new KeyValuePair<string, bool>("recycler", true),
             });
 
-        public static readonly BuildLine[] All = { L20, L21 };
+        /// <summary>
+        /// 1.5.0 (owner, 2026-11-10): the Space Age build of the modpack (branch pre_release_2.1_space_age, in active
+        /// development), every expansion mod on. Before the rocket it is the main 2.1 build, so 2.1 saves load in it; a
+        /// Space Age save does not load in the main build. Played in a profile of its own (GameProfile).
+        /// </summary>
+        public static readonly BuildLine SA = new BuildLine("2.1-sa", "2.1", "pre_release_2.1_space_age", "2.1.24", false, true, Dlc21,
+            new[]
+            {
+                new KeyValuePair<string, bool>("space-age", true),
+                new KeyValuePair<string, bool>("quality", true),
+                new KeyValuePair<string, bool>("elevated-rails", true),
+                new KeyValuePair<string, bool>("recycler", true),
+            });
+
+        /// <summary>The main line of each game version (the Space Age line shares the game of 2.1).</summary>
+        static readonly BuildLine[] Main = { L21 };
 
         static BuildLine current;
 
         /// <summary>
-        /// The line of this launcher: settings.ini line=…; without it 2.1 (a new player gets 2.1 as if there were no 2.0;
-        /// MainForm.Startup decides for players of 1.2.0 and older before anything uses it).
+        /// The line of this launcher: settings.ini line=…; 2.1 without it and for "2.0" of launchers 1.3.0 and 1.4.0
+        /// (MainForm.ForgetLine20 resets what belonged to that line before anything reads it).
         /// </summary>
         public static BuildLine Current
         {
@@ -106,21 +122,20 @@ namespace Paranoidal
 
         public static void Set(BuildLine line) { current = line; }
 
-        /// <summary>
-        /// The line is not served any more (owner, 2026-11-10: 2.0): no build updates, «Проверить файлы», rollback, pin or
-        /// host's version; the launcher moves its player to 2.1 at the start. The line itself stays: recognising a 2.0 build,
-        /// the 2.0.77 check for an offline game and the move need it.
-        /// </summary>
-        public static bool Retired(BuildLine line) => line == L20;
+        public static BuildLine ById(string id) => id == L21.Id ? L21 : id == SA.Id ? SA : null;
 
-        public static BuildLine ById(string id) => id == "2.0" ? L20 : id == "2.1" ? L21 : null;
-
-        /// <summary>The line of a factorio_version / game version ("2.0", "2.1.24"); null for other versions.</summary>
+        /// <summary>The main line of a factorio_version / game version ("2.1", "2.1.24"); null for other versions (2.0, 1.1).</summary>
         public static BuildLine Of(string version)
         {
             var mm = BuildLine.MajorMinor(version);
-            foreach (var l in All) if (l.Id == mm) return l;
+            foreach (var l in Main) if (l.Game == mm) return l;
             return null;
         }
+
+        /// <summary>
+        /// A setting that belongs to the build of a line (mods folder, pin, last start): the main lines keep the plain key
+        /// of the older launchers, the Space Age line gets "key-2.1-sa".
+        /// </summary>
+        public static string Key(string key, BuildLine line = null) => (line ?? Current).SpaceAge ? key + "-" + SA.Id : key;
     }
 }

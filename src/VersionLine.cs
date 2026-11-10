@@ -32,19 +32,19 @@ namespace Paranoidal
                 sb.Append(line).Append(t("сборка от ", "build of ")).Append(installedDate ?? "?").Append(" (").Append(AppInfo.Short(installed)).Append(')');
             else
                 sb.Append(line).Append(t("сборка не опознана (отпечаток файлов ", "build not recognised (file fingerprint ")).Append(fingerprint ?? "?").Append(')');
-            if (modified > 0) sb.Append(t(" · изменено файлов сборки: ", " · build files changed: ")).Append(modified);
+            if (modified > 0) sb.Append(t("; изменено файлов сборки: ", "; build files changed: ")).Append(modified);
 
             string settings;
             try { settings = ModSettingsFile.StartupFingerprint(modsDir) ?? t("нет файла", "no file"); }
             catch (Exception ex) { settings = t("не прочитаны (", "not read (") + ex.Message + ")"; }
-            sb.Append(t(" · стартовые настройки модов: ", " · startup mod settings: ")).Append(settings);
+            sb.Append(t("; стартовые настройки модов: ", "; startup mod settings: ")).Append(settings);
 
             if (foreign != null)
             {
                 var names = EnabledModNames(modsDir, foreign);
-                sb.Append(t(" · моды не из сборки: ", " · mods not from the build: ")).Append(names.Count == 0 ? t("нет", "none") : string.Join(", ", names));
+                sb.Append(t("; моды не из сборки: ", "; mods not from the build: ")).Append(names.Count == 0 ? t("нет", "none") : string.Join(", ", names));
             }
-            sb.Append(" · ").Append(AppInfo.Name).Append(' ').Append(AppInfo.Version);
+            sb.Append("; ").Append(AppInfo.Name).Append(' ').Append(AppInfo.Version);
             return sb.ToString();
         }
 
@@ -62,15 +62,27 @@ namespace Paranoidal
         }
 
         /// <summary>
-        /// The build line of a host's version line: "Paranoidal 2.1, …" (1.3.0+); "Paranoidal, …" of launchers 1.0.1–1.2.0 is the
-        /// 2.0 line; null when the text does not say (a bare commit id).
+        /// The build line of a host's version line: "Paranoidal 2.1, …" (1.3.0+), "Paranoidal 2.1 Space Age, …" (1.5.0+);
+        /// null when the text does not say (a bare commit id) or names a game this launcher has no build for (HostGame).
         /// </summary>
         public static BuildLine ParseHostLine(string text)
         {
             if (string.IsNullOrWhiteSpace(text)) return null;
-            var m = Regex.Match(text, @"Paranoidal (\d+\.\d+), ");
-            if (m.Success) return Lines.ById(m.Groups[1].Value);
-            return Regex.IsMatch(text, @"Paranoidal, (сборка|build) ") ? Lines.L20 : null;
+            var m = Regex.Match(text, @"Paranoidal (\d+\.\d+)( Space Age)?, ");
+            if (m.Success) return m.Groups[2].Success ? (Lines.SA.Game == m.Groups[1].Value ? Lines.SA : null) : Lines.ById(m.Groups[1].Value);
+            return null;
+        }
+
+        /// <summary>
+        /// The game (major.minor) a host's version line names: "2.1" for "Paranoidal 2.1…", "2.0" for "Paranoidal 2.0, …"
+        /// (launchers 1.3.0 and 1.4.0) and for "Paranoidal, …" of launchers 1.0.1–1.2.0; null for a bare commit id.
+        /// </summary>
+        public static string HostGame(string text)
+        {
+            if (string.IsNullOrWhiteSpace(text)) return null;
+            var m = Regex.Match(text, @"Paranoidal (\d+\.\d+)( Space Age)?, ");
+            if (m.Success) return m.Groups[1].Value;
+            return Regex.IsMatch(text, @"Paranoidal, (сборка|build) ") ? "2.0" : null;
         }
 
         /// <summary>"name version" of the foreign entries with their state in mod-list.json, for the report.</summary>
@@ -83,7 +95,7 @@ namespace Paranoidal
                 var name = ModName(full);
                 bool on;
                 bool isOn = enabled == null || !enabled.TryGetValue(name, out on) || on;
-                res.Add(Path.GetFileName(full) + " — " + name + (isOn ? " (включён)" : " (выключен)"));
+                res.Add(Path.GetFileName(full) + ": " + name + (isOn ? " (включён)" : " (выключен)"));
             }
             res.Sort(StringComparer.OrdinalIgnoreCase);
             return res;

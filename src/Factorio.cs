@@ -54,7 +54,7 @@ namespace Paranoidal
             if (!VersionOkFor(l))
                 return Tr.T("Найдена ", "Found ") + Describe() + Tr.T(". Для сборки " + l.Name + " нужна Factorio " + l.VersionWords(false) + " с дополнением Space Age.",
                     ". The " + l.Name + " build needs Factorio " + l.VersionWords(true) + " with the Space Age expansion.") +
-                    (l == Lines.L21 ? "\n\n" + HowToGet21() : "");
+                    "\n\n" + string.Join("\n", HowToGet21());
             if (!SpaceAgeFor(l))
             {
                 var found = MissingDlcFor(l).Count == l.Dlc.Length
@@ -65,16 +65,14 @@ namespace Paranoidal
             return null;
         }
 
-        /// <summary>Where a player gets Factorio 2.1 (interface language).</summary>
-        public static string HowToGet21() => Tr.T(
-            "Как получить Factorio 2.1: Steam — Библиотека → Factorio → Свойства → «Бета-версии»: если там выбрана 2.0.77, выберите «Нет» " +
-            "(или ветку с 2.1, если она ещё не основная версия), и Steam обновит игру; " +
-            "GOG Galaxy — настройки игры → «Бета-каналы»; сайт factorio.com — раздел Download (там же экспериментальные версии). " +
-            "Удобно поставить 2.1 в отдельную обычную папку, например C:\\Games\\Factorio 2.1: лаунчер сам перенесёт в неё сейвы и сборку.",
-            "How to get Factorio 2.1: Steam — Library → Factorio → Properties → \"Betas\": if 2.0.77 is chosen there, choose \"None\" " +
-            "(or the branch with 2.1 while it is not the main version) and Steam updates the game; " +
-            "GOG Galaxy — the game's settings → \"Beta channels\"; factorio.com — Download (experimental versions are there too). " +
-            "It is handy to put 2.1 into its own normal folder, e.g. C:\\Games\\Factorio 2.1: the launcher moves the saves and the build there itself.");
+        /// <summary>Where a player gets Factorio 2.1 (interface language): one line per store, for a list.</summary>
+        public static string[] HowToGet21() => new[]
+        {
+            Tr.T("Steam: Библиотека → Factorio → Свойства → «Бета-версии». Если там выбрана 2.0.77, выберите «Нет», и Steam обновит игру.",
+                 "Steam: Library → Factorio → Properties → \"Betas\". If 2.0.77 is chosen there, choose \"None\", and Steam updates the game."),
+            Tr.T("GOG Galaxy: обновите игру, у неё в настройках есть «Бета-каналы».", "GOG Galaxy: update the game; its settings have \"Beta channels\"."),
+            Tr.T("factorio.com: раздел Download.", "factorio.com: the Download page."),
+        };
 
         /// <summary>Accepts the Factorio folder itself or any folder inside it (bin, bin\x64, mods…).</summary>
         public static FactorioInfo Inspect(string path)
@@ -147,10 +145,27 @@ namespace Paranoidal
             return res;
         }
 
+        /// <summary>
+        /// Tests only: PARANOIDAL_LAUNCHER_TEST_GAMES=&lt;folder&gt;;&lt;folder&gt; (or "-" for none) replaces Steam, GOG and the
+        /// typical folders, so a test launcher never sees (and never moves into) the player's real games.
+        /// </summary>
+        static readonly string TestGames = Environment.GetEnvironmentVariable("PARANOIDAL_LAUNCHER_TEST_GAMES");
+
         static IEnumerable<FactorioInfo> Candidates(string near)
         {
             var c = new List<string>();
             if (near != null) c.Add(near);
+            if (!string.IsNullOrWhiteSpace(TestGames))
+            {
+                foreach (var d in TestGames.Split(';'))
+                    if (d.Trim().Length > 0 && d.Trim() != "-") c.Add(d.Trim());
+                foreach (var path in c.Distinct(StringComparer.OrdinalIgnoreCase))
+                {
+                    var fi = Inspect(path);
+                    if (fi != null) yield return fi;
+                }
+                yield break;
+            }
             try
             {
                 using (var k = Registry.CurrentUser.OpenSubKey(@"Software\Valve\Steam"))
