@@ -1,6 +1,7 @@
 using System;
 using System.IO;
 using System.Reflection;
+using System.Runtime.CompilerServices;
 using System.Threading;
 using Avalonia;
 using Avalonia.Threading;
@@ -12,6 +13,9 @@ using Avalonia.Threading;
 [assembly: AssemblyVersion(Paranoidal.AppInfo.AssemblyVersion)]
 [assembly: AssemblyFileVersion(Paranoidal.AppInfo.AssemblyVersion)]
 [assembly: AssemblyInformationalVersion(Paranoidal.AppInfo.Version)]
+// the engine driver and the UI pictures tool (tools/Harness, tools/UiShot) use the internal classes
+[assembly: InternalsVisibleTo("Harness")]
+[assembly: InternalsVisibleTo("UiShot")]
 
 namespace Paranoidal
 {

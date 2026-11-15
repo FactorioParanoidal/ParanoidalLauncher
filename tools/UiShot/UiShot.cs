@@ -27,7 +27,7 @@ namespace Paranoidal
             using (var frame = w.CaptureRenderedFrame())
             {
                 if (frame == null) { Console.WriteLine("snap " + file + ": no frame"); return; }
-                frame.Save(file);
+                frame.Save(file, new Avalonia.Media.Imaging.PngBitmapEncoderOptions());
                 Console.WriteLine("snap " + file + " " + frame.PixelSize.Width + "x" + frame.PixelSize.Height);
             }
         }

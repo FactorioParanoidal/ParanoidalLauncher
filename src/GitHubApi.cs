@@ -5,6 +5,7 @@ using System.Globalization;
 using System.IO;
 using System.Net;
 using System.Text;
+using System.Text.Json;
 
 namespace Paranoidal
 {
@@ -19,7 +20,17 @@ namespace Paranoidal
     {
         const string Api = "https://api.github.com/repos/" + AppInfo.Owner + "/" + AppInfo.RepoName;
 
-        static object Get(string url, int timeoutMs = 20000)
+        // the parts of the REST answers the launcher reads (camelCase names, unknown fields ignored)
+        static readonly JsonSerializerOptions JsonOptions = new JsonSerializerOptions(JsonSerializerDefaults.Web);
+
+        sealed class ApiCommit { public string Sha { get; set; } public ApiCommitBody Commit { get; set; } }
+        sealed class ApiCommitBody { public string Message { get; set; } public ApiAuthor Author { get; set; } }
+        sealed class ApiAuthor { public string Name { get; set; } public DateTime? Date { get; set; } }
+        sealed class ApiCompare { public string Status { get; set; } public List<ApiCommit> Commits { get; set; } }
+        sealed class ApiTree { public List<ApiTreeItem> Tree { get; set; } }
+        sealed class ApiTreeItem { public string Type { get; set; } public string Sha { get; set; } public long? Size { get; set; } }
+
+        static T Get<T>(string url, int timeoutMs = 20000)
         {
             if (AppInfo.TestOffline) throw new Exception("нет связи (PARANOIDAL_LAUNCHER_TEST_OFFLINE)");
             var req = (HttpWebRequest)WebRequest.Create(url);
@@ -31,8 +42,8 @@ namespace Paranoidal
             try
             {
                 using (var resp = (HttpWebResponse)req.GetResponse())
-                using (var r = new StreamReader(resp.GetResponseStream(), Encoding.UTF8))
-                    return Json.Parse(r.ReadToEnd());
+                using (var s = resp.GetResponseStream())
+                    return JsonSerializer.Deserialize<T>(s, JsonOptions);
             }
             catch (WebException ex)
             {
@@ -46,8 +57,8 @@ namespace Paranoidal
 
         public static List<CommitInfo> Compare(string baseSha, string headSha)
         {
-            var d = Get(Api + "/compare/" + baseSha + "..." + headSha + "?per_page=250") as IDictionary<string, object>;
-            var list = Parse(d == null ? null : d["commits"]);
+            var d = Get<ApiCompare>(Api + "/compare/" + baseSha + "..." + headSha + "?per_page=250");
+            var list = Parse(d == null ? null : d.Commits);
             list.Reverse();   // newest first
             return list;
         }
@@ -55,24 +66,18 @@ namespace Paranoidal
         /// <summary>Blob id -> size for every file in mods/ of a commit (one request), used to size download batches.</summary>
         public static Dictionary<string, long> BlobSizes(string commit)
         {
-            var d = Get(Api + "/git/trees/" + commit + ":mods?recursive=1", 90000) as IDictionary<string, object>;
+            var d = Get<ApiTree>(Api + "/git/trees/" + commit + ":mods?recursive=1", 90000);
             var res = new Dictionary<string, long>();
-            var items = d == null ? null : d["tree"] as IEnumerable;
-            if (items == null) return res;
-            foreach (var o in items)
-            {
-                var e = o as IDictionary<string, object>;
-                if (e == null || !"blob".Equals(e["type"] as string)) continue;
-                object s;
-                if (e.TryGetValue("size", out s) && s != null) res[(string)e["sha"]] = Convert.ToInt64(s, CultureInfo.InvariantCulture);
-            }
+            if (d == null || d.Tree == null) return res;
+            foreach (var e in d.Tree)
+                if (e != null && e.Type == "blob" && e.Sha != null && e.Size != null) res[e.Sha] = e.Size.Value;
             return res;
         }
 
         /// <summary>A commit by its full or abbreviated id (the host's version line has 10 characters).</summary>
         public static CommitInfo Commit(string sha)
         {
-            var list = Parse(new object[] { Get(Api + "/commits/" + Uri.EscapeDataString(sha)) });
+            var list = Parse(new List<ApiCommit> { Get<ApiCommit>(Api + "/commits/" + Uri.EscapeDataString(sha)) });
             return list.Count == 1 && list[0].Sha != null ? list[0] : null;
         }
 
@@ -84,8 +89,8 @@ namespace Paranoidal
         {
             try
             {
-                var d = Get(Api + "/compare/" + Uri.EscapeDataString(branch) + "..." + Uri.EscapeDataString(sha) + "?per_page=1") as IDictionary<string, object>;
-                var status = d == null ? null : d["status"] as string;
+                var d = Get<ApiCompare>(Api + "/compare/" + Uri.EscapeDataString(branch) + "..." + Uri.EscapeDataString(sha) + "?per_page=1");
+                var status = d == null ? null : d.Status;
                 return status == "behind" || status == "identical";
             }
             catch { return false; }
@@ -93,30 +98,25 @@ namespace Paranoidal
 
         public static List<CommitInfo> Recent(string branch, int count)
         {
-            return Parse(Get(Api + "/commits?sha=" + Uri.EscapeDataString(branch) + "&per_page=" + count));
+            return Parse(Get<List<ApiCommit>>(Api + "/commits?sha=" + Uri.EscapeDataString(branch) + "&per_page=" + count));
         }
 
-        static List<CommitInfo> Parse(object arr)
+        static List<CommitInfo> Parse(List<ApiCommit> items)
         {
             var list = new List<CommitInfo>();
-            var items = arr as IEnumerable;
             if (items == null) return list;
-            foreach (var o in items)
+            foreach (var c in items)
             {
-                var c = o as IDictionary<string, object>;
                 if (c == null) continue;
-                var commit = c["commit"] as IDictionary<string, object>;
-                var author = commit == null ? null : commit["author"] as IDictionary<string, object>;
-                var ci = new CommitInfo { Sha = c["sha"] as string };
-                var msg = (commit == null ? "" : commit["message"] as string) ?? "";
+                var ci = new CommitInfo { Sha = c.Sha };
+                var msg = (c.Commit == null ? null : c.Commit.Message) ?? "";
                 int nl = msg.IndexOf('\n');
                 ci.Message = (nl >= 0 ? msg.Substring(0, nl) : msg).Trim();
+                var author = c.Commit == null ? null : c.Commit.Author;
                 if (author != null)
                 {
-                    ci.Author = author["name"] as string;
-                    DateTime dt;
-                    if (DateTime.TryParse(author["date"] as string, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out dt))
-                        ci.Date = dt.ToLocalTime();
+                    ci.Author = author.Name;
+                    if (author.Date != null) ci.Date = author.Date.Value.ToLocalTime();
                 }
                 list.Add(ci);
             }

@@ -1,9 +1,10 @@
 <Project Sdk="Microsoft.NET.Sdk">
   <!--
-    Paranoidal Launcher: .NET 10 + Avalonia. The engine is src/*.cs (also built into tools/Harness), the window is src/UI.
+    Paranoidal Launcher: .NET 10 + Avalonia. The engine is src/*.cs, the window is src/UI; tools/Harness and tools/UiShot
+    reference this project (InternalsVisibleTo in src/UI/Program.cs).
     The version is set only in src/AppInfo.cs (AppInfo.Version); the assembly attributes in src/UI/Program.cs take it from
     there, and the apphost of the single-file exe gets the same version resource (self-update checks ProductVersion).
-    Release build for Windows: build.ps1 (dotnet publish -r win-x64, single file, self-contained, MinGit embedded).
+    Release build for Windows: dotnet publish -c Release -r win-x64 (single file, self-contained, MinGit embedded).
   -->
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
@@ -38,12 +39,6 @@
     <PackageReference Include="Avalonia" Version="12.1.6" />
     <PackageReference Include="Avalonia.Desktop" Version="12.1.6" />
     <PackageReference Include="Avalonia.Themes.Simple" Version="12.1.6" />
-  </ItemGroup>
-
-  <ItemGroup>
-    <!-- the WinForms front end of 1.5.0, replaced file by file by src/UI -->
-    <Compile Remove="Program.cs;MainForm.cs;Ui.cs;Controls.cs;StartScreen.cs;FolderPicker.cs;Dialogs.cs" />
-    <Compile Remove="bin/**;obj/**" />
   </ItemGroup>
 
   <ItemGroup>
