@@ -50,7 +50,6 @@ namespace Paranoidal
                 }
                 Settings.MigratePaths();
                 AppDomain.CurrentDomain.UnhandledException += (s, e) => Crash(e.ExceptionObject as Exception, false);
-                App.CreateMain = () => new MainWindow();
                 BuildAvaloniaApp().AfterSetup(_ =>
                 {
                     Dispatcher.UIThread.UnhandledException += (s, e) => { e.Handled = true; Crash(e.Exception, true); };
@@ -75,7 +74,7 @@ namespace Paranoidal
                 Tr.T("\nКнопка «Отчёт о проблеме» соберёт его в ZIP для Discord.", "\nThe \"Problem report\" button packs it into a ZIP for Discord.");
             try
             {
-                if (ui) { DarkDialog.Info(MainWindow.Current, AppInfo.Name, text, Gui.Red); return; }
+                if (ui) { _ = DarkDialog.Info(MainWindow.Current, AppInfo.Name, text, Gui.Red); return; }
             }
             catch { }
             SingleInstance.Info(text, AppInfo.Name);

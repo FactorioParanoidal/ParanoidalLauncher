@@ -5,12 +5,9 @@ using System.IO;
 using System.IO.Pipes;
 using System.Linq;
 using System.Runtime.InteropServices;
-using System.Text;
-using System.Threading;
 using System.Threading.Tasks;
 using Avalonia;
 using Avalonia.Controls;
-using Avalonia.Input.Platform;
 using Avalonia.Media;
 using Avalonia.Platform.Storage;
 using Avalonia.Threading;
@@ -18,84 +15,31 @@ using Avalonia.Threading;
 namespace Paranoidal
 {
     /// <summary>
-    /// Modal windows and waits on the UI thread. The 1.5.0 code asks questions synchronously (WinForms ShowDialog):
-    /// Avalonia's dialogs are asynchronous, so the UI thread runs a nested dispatcher frame until the answer is there.
+    /// The system folder and file dialogs (the Explorer-style window on Windows, the portal or GTK dialog elsewhere) are
+    /// Avalonia's StorageProvider pickers, called in place; these two helpers give them a start folder from a path and
+    /// turn the answer into a local path.
     /// </summary>
-    static class Modal
+    static class PickerPaths
     {
-        /// <summary>Shows the window as a dialog of `owner` (or alone) and returns when it is closed.</summary>
-        public static void Run(Window w, Window owner)
-        {
-            var frame = new DispatcherFrame();
-            w.Closed += (s, e) => frame.Continue = false;
-            if (owner != null && owner.IsVisible) w.ShowDialog(owner);
-            else w.Show();
-            Dispatcher.UIThread.PushFrame(frame);
-        }
-
-        /// <summary>The result of a task, the UI thread keeps working meanwhile.</summary>
-        public static T Wait<T>(Task<T> t)
-        {
-            if (!t.IsCompleted)
-            {
-                var frame = new DispatcherFrame();
-                t.ContinueWith(_ => Dispatcher.UIThread.Post(() => frame.Continue = false), TaskScheduler.Default);
-                Dispatcher.UIThread.PushFrame(frame);
-            }
-            return t.GetAwaiter().GetResult();
-        }
-
-        public static void Wait(Task t) => Wait(t.ContinueWith(x => { x.GetAwaiter().GetResult(); return true; }, TaskScheduler.Default));
-    }
-
-    /// <summary>Folder and file choice (the Explorer-style window on Windows, the portal or GTK dialog elsewhere).</summary>
-    static class Pickers
-    {
-        static async Task<IStorageFolder> Start(IStorageProvider sp, string initial)
+        /// <summary>The folder a picker opens in, or null (no such folder: the system default).</summary>
+        public static async Task<IStorageFolder> StartAt(this IStorageProvider sp, string initial)
         {
             try { return string.IsNullOrEmpty(initial) || !Directory.Exists(initial) ? null : await sp.TryGetFolderFromPathAsync(initial); }
             catch { return null; }
         }
 
-        /// <summary>The chosen folder or null.</summary>
-        public static string Folder(Window owner, string title, string initial)
+        /// <summary>The local path of the chosen folder or file; null when nothing was chosen or the picker failed.</summary>
+        public static async Task<string> LocalPath<T>(this Task<IReadOnlyList<T>> pick) where T : IStorageItem
         {
             try
             {
-                var sp = owner.StorageProvider;
-                var list = Modal.Wait(PickFolder(sp, title, initial));
-                var f = list == null ? null : list.FirstOrDefault();
-                var path = f == null ? null : f.TryGetLocalPath();
-                return string.IsNullOrEmpty(path) ? null : Path.GetFullPath(path).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+                var item = (await pick).FirstOrDefault();
+                var path = item == null ? null : item.TryGetLocalPath();
+                if (string.IsNullOrEmpty(path)) return null;
+                return item is IStorageFolder ? Path.GetFullPath(path).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar) : path;
             }
             catch { return null; }
         }
-
-        static async Task<IReadOnlyList<IStorageFolder>> PickFolder(IStorageProvider sp, string title, string initial) =>
-            await sp.OpenFolderPickerAsync(new FolderPickerOpenOptions { Title = title, AllowMultiple = false, SuggestedStartLocation = await Start(sp, initial) });
-
-        /// <summary>A chosen file (filter: a name and its patterns like *.zip) or null.</summary>
-        public static string File(Window owner, string title, string initial, string filterName, params string[] patterns)
-        {
-            try
-            {
-                var sp = owner.StorageProvider;
-                var list = Modal.Wait(PickFile(sp, title, initial, filterName, patterns));
-                var f = list == null ? null : list.FirstOrDefault();
-                var path = f == null ? null : f.TryGetLocalPath();
-                return string.IsNullOrEmpty(path) ? null : path;
-            }
-            catch { return null; }
-        }
-
-        static async Task<IReadOnlyList<IStorageFile>> PickFile(IStorageProvider sp, string title, string initial, string filterName, string[] patterns) =>
-            await sp.OpenFilePickerAsync(new FilePickerOpenOptions
-            {
-                Title = title,
-                AllowMultiple = false,
-                SuggestedStartLocation = await Start(sp, initial),
-                FileTypeFilter = new[] { new FilePickerFileType(filterName) { Patterns = patterns } },
-            });
     }
 
     /// <summary>Opening links, folders and files with the programs of the system.</summary>
@@ -122,25 +66,6 @@ namespace Paranoidal
         {
             if (OperatingSystem.IsWindows()) { Process.Start("explorer.exe", "/select," + FsUtil.QuoteArg(file)); return; }
             Open(Path.GetDirectoryName(file));
-        }
-    }
-
-    /// <summary>The clipboard of a window, synchronously.</summary>
-    static class ClipText
-    {
-        static IClipboard Of(Window w) => TopLevel.GetTopLevel(w)?.Clipboard;
-
-        public static void SetText(Window w, string text)
-        {
-            var c = Of(w);
-            if (c == null) throw new InvalidOperationException("clipboard is not available");
-            Modal.Wait(c.SetTextAsync(text));
-        }
-
-        public static string GetText(Window w)
-        {
-            var c = Of(w);
-            return c == null ? null : Modal.Wait(c.TryGetTextAsync());
         }
     }
 
@@ -213,7 +138,7 @@ namespace Paranoidal
     static class SingleInstance
     {
         static readonly string PipeName = "ParanoidalLauncher.ShowWindow." + Environment.UserName;
-        static Thread server;
+        static bool listening;
 
         /// <summary>Second start: asks the running launcher to show its window (it may take the foreground).</summary>
         public static void Signal()
@@ -234,34 +159,27 @@ namespace Paranoidal
         /// <summary>The running launcher: `show` runs on the UI thread at every second start.</summary>
         public static void Listen(Action show)
         {
-            if (server != null) return;
-            server = new Thread(() =>
-            {
-                while (true)
-                {
-                    try
-                    {
-                        using (var s = new NamedPipeServerStream(PipeName, PipeDirection.In, 1, PipeTransmissionMode.Byte, PipeOptions.CurrentUserOnly))
-                        {
-                            s.WaitForConnection();
-                            try { s.ReadByte(); } catch { }
-                        }
-                        Dispatcher.UIThread.Post(show);
-                    }
-                    catch { Thread.Sleep(1000); }
-                }
-            }) { IsBackground = true, Name = "single-instance" };
-            server.Start();
+            if (listening) return;
+            listening = true;
+            _ = Serve(show);
         }
 
-        /// <summary>Restores a minimised window and brings it to the front.</summary>
-        public static void BringUp(Window w)
+        // one connection at a time, awaited on the thread pool (no thread of its own); never ends
+        static async Task Serve(Action show)
         {
-            if (!w.IsVisible) w.Show();
-            if (w.WindowState == WindowState.Minimized) w.WindowState = WindowState.Normal;
-            w.Topmost = true;
-            w.Topmost = false;
-            w.Activate();
+            while (true)
+            {
+                try
+                {
+                    using (var s = new NamedPipeServerStream(PipeName, PipeDirection.In, 1, PipeTransmissionMode.Byte, PipeOptions.CurrentUserOnly | PipeOptions.Asynchronous))
+                    {
+                        await s.WaitForConnectionAsync().ConfigureAwait(false);
+                        try { await s.ReadAsync(new byte[1], 0, 1).ConfigureAwait(false); } catch { }
+                    }
+                    Dispatcher.UIThread.Post(show);
+                }
+                catch { await Task.Delay(1000).ConfigureAwait(false); }
+            }
         }
 
         /// <summary>A message above every window, without an owner in this process (the second start).</summary>

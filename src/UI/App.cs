@@ -1,4 +1,3 @@
-using System;
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Controls.ApplicationLifetimes;
@@ -11,9 +10,6 @@ namespace Paranoidal
     /// <summary>The Avalonia application: the dark simple theme (scroll bars, text boxes, tooltips) under the controls drawn in code.</summary>
     sealed class App : Application
     {
-        /// <summary>The first window (MainWindow; the UI pictures tool sets its own).</summary>
-        public static Func<Window> CreateMain;
-
         public override void Initialize()
         {
             RequestedThemeVariant = ThemeVariant.Dark;
@@ -34,8 +30,8 @@ namespace Paranoidal
 
         public override void OnFrameworkInitializationCompleted()
         {
-            if (ApplicationLifetime is IClassicDesktopStyleApplicationLifetime d && CreateMain != null)
-                d.MainWindow = CreateMain();
+            // the desktop start (Program.cs); the UI pictures tool runs without a lifetime and makes its own windows
+            if (ApplicationLifetime is IClassicDesktopStyleApplicationLifetime d) d.MainWindow = new MainWindow();
             base.OnFrameworkInitializationCompleted();
         }
     }

@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Threading.Tasks;
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Input;
@@ -32,6 +33,19 @@ namespace Paranoidal
 
         public void Finish(DialogResult r) { Result = r; Close(); }
 
+        /// <summary>
+        /// Shows the window as a modal dialog of `owner` (the owner takes no input until it closes); without a visible
+        /// owner (a crash before the main window is shown) as a window of its own. Completes when it is closed.
+        /// </summary>
+        public Task ShowFor(Window owner)
+        {
+            if (owner != null && owner.IsVisible) return ShowDialog(owner);
+            var closed = new TaskCompletionSource();
+            Closed += (s, e) => closed.TrySetResult();
+            Show();
+            return closed.Task;
+        }
+
         protected override void OnKeyDown(KeyEventArgs e)
         {
             Keys?.Invoke(e);
@@ -53,7 +67,7 @@ namespace Paranoidal
         /// <summary>UI pictures only (UiShot): receives the dialog instead of showing it.</summary>
         public static Action<Window> TestSnapshot;
 
-        public static DialogResult Ask(Window owner, string title, string message, string sub, IList<string> details,
+        public static async Task<DialogResult> Ask(Window owner, string title, string message, string sub, IList<string> details,
             string yesText, string noText, Color accent, ButtonKind yesKind = ButtonKind.Confirm)
         {
             if (Headless != null)
@@ -111,13 +125,11 @@ namespace Paranoidal
                 else if (e.Key == Key.Escape) { e.Handled = true; f.Finish(noText == null ? DialogResult.Yes : DialogResult.Cancel); }
             };
             if (TestSnapshot != null) { TestSnapshot(f); return DialogResult.Cancel; }
-            Modal.Run(f, owner);
+            await f.ShowFor(owner);
             return f.Result;
         }
 
-        public static void Info(Window owner, string title, string message, Color accent)
-        {
+        public static Task Info(Window owner, string title, string message, Color accent) =>
             Ask(owner, title, message, null, null, "OK", null, accent);
-        }
     }
 }

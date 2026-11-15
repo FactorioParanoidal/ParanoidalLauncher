@@ -161,8 +161,8 @@ namespace Paranoidal
             // the build tabs and «Спрашивать сборку при запуске» at their right
             tab21.Text = Lines.L21.Name;
             tabSa.Text = Lines.SA.Name;
-            tab21.Click += () => SwitchLine(Lines.L21);
-            tabSa.Click += () => SwitchLine(Lines.SA);
+            tab21.Click += async () => await SwitchLine(Lines.L21);
+            tabSa.Click += async () => await SwitchLine(Lines.SA);
             chkAsk = Check(root, Settings.Get("ask-build") != "0");
             chkAsk.CheckedChanged += () =>
             {
@@ -176,7 +176,7 @@ namespace Paranoidal
             start.Card21.Click += () => PickBuild(Lines.L21);
             start.CardSa.Click += () => PickBuild(Lines.SA);
             start.BtnClose.Click += () => { AppendLog("Подходящей Factorio нет, лаунчер закрыт кнопкой «Закрыть».", LogKind.Muted); Close(); };
-            start.BtnPick.Click += PickGameForStart;
+            start.BtnPick.Click += async () => await PickGameForStart();
             start.BtnRecheck.Click += () => { AppendLog("«Проверить снова»: ищу Factorio ещё раз.", LogKind.Info); DetectGame(); };
 
             lblInstalled = L(cardBuild, Gui.Text);
@@ -240,7 +240,7 @@ namespace Paranoidal
             }
             SelectTab(0);
 
-            gameWatch.Tick += (s, e) => WatchGame();
+            gameWatch.Tick += async (s, e) => await WatchGame();
             Tr.Changed += () =>
             {
                 ApplyTexts();
@@ -257,7 +257,7 @@ namespace Paranoidal
                 {
                     // a second start of the launcher (Program.cs) asks this one to show its window
                     AppendLog("Лаунчер запущен ещё раз, показываю это окно.", LogKind.Muted);
-                    if (!Auto) { try { SingleInstance.BringUp(this); } catch { } }
+                    if (!Auto) { try { BringUp(); } catch { } }
                 });
                 Opened += (s, e) => { opened = true; Startup(); };
             }
@@ -280,6 +280,16 @@ namespace Paranoidal
                 SetScreen(StartPanel.View.Busy);
             }
             UpdateUi();
+        }
+
+        /// <summary>A second start of the launcher: the window is restored if minimised and comes to the front.</summary>
+        void BringUp()
+        {
+            if (!IsVisible) Show();
+            if (WindowState == WindowState.Minimized) WindowState = WindowState.Normal;
+            Topmost = true;
+            Topmost = false;
+            Activate();
         }
 
         protected override void OnPropertyChanged(AvaloniaPropertyChangedEventArgs change)
@@ -387,6 +397,13 @@ namespace Paranoidal
             b.Click += click;
             parent.Children.Add(b);
             return b;
+        }
+
+        /// <summary>A button whose action may ask (a dialog): an error in it reaches the crash handler of Program.cs.</summary>
+        static FButton B(DrawCanvas parent, string text, ButtonKind kind, Func<Task> click, bool big = false)
+        {
+            Action handler = async () => await click();   // async void: the click starts the action and returns
+            return B(parent, text, kind, handler, big);
         }
 
         static StatusLine Status(DrawCanvas parent, FFont font)
@@ -870,15 +887,26 @@ namespace Paranoidal
 
         public void CanCancel(bool value) => Ui(() => { cancelable = value; btnCancel.IsEnabled = value && busy; });
 
+        /// <summary>
+        /// A question of the engine: it comes from the worker thread of the operation, which waits for the answer while the
+        /// UI thread shows the dialog (the UI thread itself never waits here).
+        /// </summary>
+        static bool AskFromWorker(Func<Task<bool>> ask)
+        {
+            if (Dispatcher.UIThread.CheckAccess()) throw new InvalidOperationException("engine questions come from a worker thread");
+            Task<bool> answer = Dispatcher.UIThread.InvokeAsync(ask);
+            return answer.GetAwaiter().GetResult();
+        }
+
         public bool ConfirmExtras(List<string> names)
         {
-            return Dispatcher.UIThread.Invoke(() =>
+            return AskFromWorker(async () =>
             {
                 var details = names.Take(400).ToList();
                 if (names.Count > 400) details.Add(Tr.T("… и ещё ", "… and ") + Fmt.Num(names.Count - 400) + Tr.T("", " more"));
                 AppendLog("В папке mods не из сборки: " + Fmt.Num(names.Count) + (Auto ? " (" + string.Join(", ", names) + ")" : ""), LogKind.Warn);
                 if (Auto) { AppendLog("[тест: вопрос о лишних модах без показа, ответ «Оставить»]", LogKind.Muted); return false; }
-                var r = DarkDialog.Ask(this, Tr.T("Лишние моды", "Extra mods"),
+                var r = await DarkDialog.Ask(this, Tr.T("Лишние моды", "Extra mods"),
                     Tr.T("В папке mods есть моды и файлы, которых нет в сборке (", "The mods folder has mods and files that are not in the build (") + Fmt.Num(names.Count) + ").",
                     Tr.T("Удалить их, чтобы папка точно совпадала со сборкой? Если оставить, лаунчер больше про них не спросит.",
                          "Delete them so the folder matches the build exactly? If you keep them, the launcher does not ask about them again."),
@@ -889,7 +917,7 @@ namespace Paranoidal
 
         public bool ConfirmOverwrite(int files, List<string> sample, BuildFound f)
         {
-            return Dispatcher.UIThread.Invoke(() =>
+            return AskFromWorker(async () =>
             {
                 if (seeding != null)
                 {
@@ -912,7 +940,7 @@ namespace Paranoidal
                 AppendLog("Первая синхронизация: отличаются от сборки файлов " + files + ". Спрашиваю подтверждение.", LogKind.Warn);
                 var details = sample.ToList();
                 if (files > sample.Count) details.Add(Tr.T("… и ещё ", "… and ") + Fmt.Num(files - sample.Count));
-                var r = DarkDialog.Ask(this, Tr.T("Файлы в папке mods", "Files in the mods folder"), message,
+                var r = await DarkDialog.Ask(this, Tr.T("Файлы в папке mods", "Files in the mods folder"), message,
                     Tr.T("Отличающихся файлов: ", "Files that differ: ") + Fmt.Num(files) +
                     Tr.T(". Установка заменит их файлами версии с GitHub, скачается только разница. Моды не из сборки, mod-list.json и mod-settings.dat останутся как есть. " +
                          "Если эту сборку вам дал хост и с ним нужно совпадать, нажмите «Отмена» и воспользуйтесь «Версией хоста…».",
@@ -925,38 +953,49 @@ namespace Paranoidal
 
         // ------------------------------------------------------------------ operations
 
-        void RunOp<T>(Func<T> work, Action<T> done)
+        void RunOp<T>(Func<T> work, Action<T> done) => RunOp(work, r => { done(r); return Task.CompletedTask; });
+
+        /// <summary>
+        /// An operation: `work` on the thread pool (the window is busy meanwhile), then `done` on the UI thread; `done` may
+        /// ask (a dialog) and the operation ends with its answer. An error is shown in the window and in a dialog.
+        /// </summary>
+        async void RunOp<T>(Func<T> work, Func<T, Task> done)
         {
             SetBusy(true);
-            Task.Run(work).ContinueWith(t => Ui(() =>
+            T result = default(T);
+            Exception error = null;
+            try { result = await Task.Run(work); }
+            catch (Exception ex) { error = ex; }
+            // the worker's last Log/Stage/Progress (Dispatcher.Post, default priority) are still queued, and an await
+            // continuation runs before them: let them run first, so `done` sets the final state and its journal lines
+            // come after the operation's own
+            await Dispatcher.UIThread.InvokeAsync(() => { }, DispatcherPriority.Default);
+            if (closed) return;
+            SetBusy(false);
+            if (error != null)
             {
-                SetBusy(false);
-                if (t.IsFaulted)
+                if (error is OperationCanceledException)
                 {
-                    var ex = t.Exception.GetBaseException();
-                    if (ex is OperationCanceledException)
-                    {
-                        Idle(Tr.T("Отменено.", "Cancelled."));
-                        lblDetail.Text = Tr.T("Файлы модов не изменены. Уже скачанное сохранено, следующее обновление продолжит с этого места.",
-                            "The mod files were not changed. What was downloaded is kept, and the next update continues from here.");
-                        AppendLog("Операция отменена.", LogKind.Warn);
-                    }
-                    else
-                    {
-                        var se = ex as SyncException;
-                        var shown = se != null ? se.Display : ex.Message;
-                        Idle(Tr.T("Ошибка", "Error"));
-                        lblDetail.Text = shown.Split('\n')[0];
-                        AppendLog(se != null ? ex.Message : ex.ToString(), LogKind.Error);
-                        DarkDialog.Info(this, Tr.T("Ошибка", "Error"), shown, Gui.Red);
-                    }
-                    UpdateUi();
-                    if (Auto && autoCloseAfterUpdate && !restarting) CloseLater();
-                    return;
+                    Idle(Tr.T("Отменено.", "Cancelled."));
+                    lblDetail.Text = Tr.T("Файлы модов не изменены. Уже скачанное сохранено, следующее обновление продолжит с этого места.",
+                        "The mod files were not changed. What was downloaded is kept, and the next update continues from here.");
+                    AppendLog("Операция отменена.", LogKind.Warn);
                 }
-                done(t.Result);
+                else
+                {
+                    var se = error as SyncException;
+                    var shown = se != null ? se.Display : error.Message;
+                    Idle(Tr.T("Ошибка", "Error"));
+                    lblDetail.Text = shown.Split('\n')[0];
+                    AppendLog(se != null ? error.Message : error.ToString(), LogKind.Error);
+                    await DarkDialog.Info(this, Tr.T("Ошибка", "Error"), shown, Gui.Red);
+                }
                 UpdateUi();
-            }));
+                if (Auto && autoCloseAfterUpdate && !restarting) CloseLater();
+                return;
+            }
+            await done(result);
+            UpdateUi();
         }
     }
 }

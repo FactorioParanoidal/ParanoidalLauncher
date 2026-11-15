@@ -6,6 +6,8 @@ using System.Linq;
 using System.Text;
 using System.Threading.Tasks;
 using Avalonia.Controls;
+using Avalonia.Input.Platform;
+using Avalonia.Platform.Storage;
 using Avalonia.Threading;
 
 namespace Paranoidal
@@ -21,7 +23,7 @@ namespace Paranoidal
         /// Factorio 2.0.77) and a suitable game is known, it moves itself there silently; if that fails it asks for
         /// administrator rights. True: the copy in the game folder was started and this process closes.
         /// </summary>
-        bool MaybeRelocate(List<FactorioInfo> all, bool fromSettings)
+        async Task<bool> MaybeRelocate(List<FactorioInfo> all, bool fromSettings)
         {
             var why = Relocation.DisabledReason();
             if (why != null) { AppendLog("Перенос лаунчера в папку игры выключен: " + why + ".", LogKind.Muted); return false; }
@@ -33,7 +35,7 @@ namespace Paranoidal
                 if (ok.Count > 1)
                 {
                     AppendLog("Найдено несколько подходящих установок игры: " + string.Join("; ", ok.Select(x => x.Dir)), LogKind.Info);
-                    var chosen = Auto ? TestChosen(ok) : Dialogs.ChooseInstall(this, ok);
+                    var chosen = Auto ? TestChosen(ok) : await Dialogs.ChooseInstall(this, ok);
                     if (chosen == null)
                     {
                         installPostponed = true;
@@ -51,7 +53,7 @@ namespace Paranoidal
                 return false;
             }
             if (Relocation.SameDir(target.Dir, AppInfo.ExeDir)) return false;
-            return RelocateTo(target);
+            return await RelocateTo(target);
         }
 
         /// <summary>Tests: the answer to «several installations» (PARANOIDAL_LAUNCHER_TEST_CHOOSE).</summary>
@@ -62,7 +64,7 @@ namespace Paranoidal
             return TestChoose != null && int.TryParse(TestChoose, out n) && n >= 1 && n <= ok.Count ? ok[n - 1] : ok[0];
         }
 
-        bool RelocateTo(FactorioInfo target)
+        async Task<bool> RelocateTo(FactorioInfo target)
         {
             var exe = SelfUpdate.CurrentExe;
             var log = new List<string>();
@@ -86,7 +88,7 @@ namespace Paranoidal
             if (newExe == null)
             {
                 AppendLog("Перенести лаунчер автоматически не удалось: " + error + ".", LogKind.Warn);
-                var r = Auto ? DialogResult.No : DarkDialog.Ask(this, Tr.T("Папка игры", "Game folder"),
+                var r = Auto ? DialogResult.No : await DarkDialog.Ask(this, Tr.T("Папка игры", "Game folder"),
                     Tr.T("Лаунчер нужно перенести в папку игры", "The launcher must be moved into the game folder"),
                     Tr.T("Лаунчер должен лежать в папке игры, в которую вы играете:\n",
                          "The launcher must live in the folder of the game you play:\n") + target.Dir + "\n\n" +
@@ -108,7 +110,7 @@ namespace Paranoidal
                 if (!Relocation.TargetIsSameOrNewer(target.Dir) && !SelfUpdate.InstallElevated(exe, exe, target.Dir, out err2))
                 {
                     AppendLog(err2 == null ? "Права администратора не выданы, перенос отложен." : "Перенос не удался: " + err2, LogKind.Warn);
-                    if (err2 != null) DarkDialog.Info(this, Tr.T("Папка игры", "Game folder"), Tr.T("Перенос не удался: ", "The move failed: ") + err2, Gui.Red);
+                    if (err2 != null) await DarkDialog.Info(this, Tr.T("Папка игры", "Game folder"), Tr.T("Перенос не удался: ", "The move failed: ") + err2, Gui.Red);
                     return false;
                 }
                 newExe = Path.Combine(target.Dir, AppInfo.ExeName);
@@ -133,12 +135,12 @@ namespace Paranoidal
         // ------------------------------------------------------------------ update and file check
 
         /// <summary>«Проверить файлы»: read every file of the installed build again and restore what differs.</summary>
-        void DoVerify()
+        async Task DoVerify()
         {
             if (engine == null || installed == null) return;
             var err = SyncPaths.Validate(modsDir);
-            if (err != null) { DarkDialog.Info(this, Tr.T("Папка модов", "Mods folder"), err, Gui.Red); return; }
-            if (FactorioInfo.IsRunning()) { DarkDialog.Info(this, Tr.T("Factorio запущена", "Factorio is running"), Tr.T("Закройте игру и запустите проверку снова.", "Close the game and start the check again."), Gui.Orange); return; }
+            if (err != null) { await DarkDialog.Info(this, Tr.T("Папка модов", "Mods folder"), err, Gui.Red); return; }
+            if (FactorioInfo.IsRunning()) { await DarkDialog.Info(this, Tr.T("Factorio запущена", "Factorio is running"), Tr.T("Закройте игру и запустите проверку снова.", "Close the game and start the check again."), Gui.Orange); return; }
             var mods = modsDir;
             RunOp(() => engine.Update(new SyncPaths(mods), true), res =>
             {
@@ -205,18 +207,18 @@ namespace Paranoidal
             DoLayout();
         }
 
-        void DoUpdate(bool thenPlay, string target)
+        async Task DoUpdate(bool thenPlay, string target)
         {
             if (engine == null) return;
             if (target == null && Pinned) return;
             var err = SyncPaths.Validate(modsDir);
-            if (err != null) { DarkDialog.Info(this, Tr.T("Папка модов", "Mods folder"), err, Gui.Red); return; }
-            if (FactorioInfo.IsRunning()) { DarkDialog.Info(this, Tr.T("Factorio запущена", "Factorio is running"), Tr.T("Закройте игру и запустите обновление снова.", "Close the game and start the update again."), Gui.Orange); return; }
+            if (err != null) { await DarkDialog.Info(this, Tr.T("Папка модов", "Mods folder"), err, Gui.Red); return; }
+            if (FactorioInfo.IsRunning()) { await DarkDialog.Info(this, Tr.T("Factorio запущена", "Factorio is running"), Tr.T("Закройте игру и запустите обновление снова.", "Close the game and start the update again."), Gui.Orange); return; }
             // the latest build needs a newer game than the player has: the build can be updated, the game must follow
             if (target == null && remoteReq != null && fac != null && !Lines.Current.Exact && Lines.Current.Matches(fac.Version) &&
                 Releases.Compare(fac.Version, remoteReq) < 0 && remote != installed && !Auto)
             {
-                var a = DarkDialog.Ask(this, Tr.T("Нужна новая версия игры", "A newer game is needed"),
+                var a = await DarkDialog.Ask(this, Tr.T("Нужна новая версия игры", "A newer game is needed"),
                     Tr.T("Новая версия сборки требует Factorio ", "The new build version needs Factorio ") + remoteReq + Tr.T(" или новее", " or newer"),
                     Tr.T("У вас Factorio " + fac.Version + ". Сборка обновится, но играть можно будет только после обновления игры. Обновить сборку сейчас?",
                          "You have Factorio " + fac.Version + ". The build will be updated, but you can play only after updating the game. Update the build now?"),
@@ -339,11 +341,11 @@ namespace Paranoidal
 
         // ------------------------------------------------------------------ rollback and the host's version
 
-        void DoRollback()
+        async Task DoRollback()
         {
             if (engine == null || rollbackTarget == null) return;
-            if (FactorioInfo.IsRunning()) { DarkDialog.Info(this, Tr.T("Factorio запущена", "Factorio is running"), Tr.T("Закройте игру и повторите.", "Close the game and try again."), Gui.Orange); return; }
-            var r = DarkDialog.Ask(this, rollbackNewer ? Tr.T("Вернуть версию", "Return to a version") : Tr.T("Откат сборки", "Build rollback"),
+            if (FactorioInfo.IsRunning()) { await DarkDialog.Info(this, Tr.T("Factorio запущена", "Factorio is running"), Tr.T("Закройте игру и повторите.", "Close the game and try again."), Gui.Orange); return; }
+            var r = await DarkDialog.Ask(this, rollbackNewer ? Tr.T("Вернуть версию", "Return to a version") : Tr.T("Откат сборки", "Build rollback"),
                 rollbackNewer ? Tr.T("Вернуть версию сборки от ", "Return to the build of ") + rollbackDate + "?"
                               : Tr.T("Откатить сборку на версию от ", "Roll the build back to the version of ") + rollbackDate + "?",
                 Tr.T("Интернет не нужен: файлы этой версии сохранены при обновлении. Сейчас установлена версия от ", "No internet needed: the files of that version were kept at the update. Installed now: the version of ") +
@@ -355,7 +357,7 @@ namespace Paranoidal
             if (r != DialogResult.Yes) return;
             var mods = modsDir;
             bool back = !rollbackNewer;
-            RunOp(() => engine.Rollback(new SyncPaths(mods)), res =>
+            RunOp(() => engine.Rollback(new SyncPaths(mods)), async res =>
             {
                 installed = res.New;
                 installedDate = null;
@@ -366,7 +368,7 @@ namespace Paranoidal
                 if (res.NotRestored > 0)
                 {
                     lblDetail.Text = Tr.T("Не совпадают со сборкой файлов: ", "Files that do not match the build: ") + res.NotRestored + Tr.T(", нажмите «Проверить файлы» (нужен интернет)", ": press \"Check files\" (needs internet)");
-                    DarkDialog.Info(this, Tr.T("Откат", "Rollback"), Tr.T("Готово, но файлов, которые были изменены вручную до обновления, нет в сохранённой копии: ", "Done, but files changed by hand before the update are not in the saved copy: ") +
+                    await DarkDialog.Info(this, Tr.T("Откат", "Rollback"), Tr.T("Готово, но файлов, которые были изменены вручную до обновления, нет в сохранённой копии: ", "Done, but files changed by hand before the update are not in the saved copy: ") +
                         res.NotRestored + Tr.T(".\nНажмите «Проверить файлы», когда будет интернет.", ".\nPress \"Check files\" when you have internet."), Gui.Orange);
                 }
                 else lblDetail.Text = back && !pinSetting
@@ -376,26 +378,26 @@ namespace Paranoidal
             });
         }
 
-        void DoHost()
+        async Task DoHost()
         {
             if (engine == null || modsDir == null) return;
             if (Lines.Current.SpaceAge && fac != null && !GameProfile.SpaceAgeExists(fac))
             {
-                DarkDialog.Info(this, Tr.T("Версия хоста", "Host's version"), Tr.T("Сначала установите " + Lines.SA.Name + " кнопкой «Установить».",
+                await DarkDialog.Info(this, Tr.T("Версия хоста", "Host's version"), Tr.T("Сначала установите " + Lines.SA.Name + " кнопкой «Установить».",
                     "Install " + Lines.SA.Name + " with the \"Install\" button first."), Gui.Orange);
                 return;
             }
-            var line = Dialogs.AskHostLine(this);
+            var line = await Dialogs.AskHostLine(this);
             if (line == null) return;
             var sha = VersionLine.ParseHost(line);
             if (sha == null) return;
             var hostLine = VersionLine.ParseHostLine(line);
             var hostGame = VersionLine.HostGame(line);
-            if (hostLine != null && hostLine != Lines.Current) { OtherLineHost(hostLine, null); return; }
-            if (hostLine == null && hostGame != null) { OtherLineHost(null, hostGame); return; }
+            if (hostLine != null && hostLine != Lines.Current) { await OtherLineHost(hostLine, null); return; }
+            if (hostLine == null && hostGame != null) { await OtherLineHost(null, hostGame); return; }
             if (installed != null && installed.StartsWith(sha))
             {
-                DarkDialog.Info(this, Tr.T("Версия хоста", "Host's version"), Tr.T("У вас уже установлена эта версия сборки.", "You already have this build version."), Gui.Green);
+                await DarkDialog.Info(this, Tr.T("Версия хоста", "Host's version"), Tr.T("У вас уже установлена эта версия сборки.", "You already have this build version."), Gui.Green);
                 if (!chkPin.Checked) chkPin.Checked = true;
                 return;
             }
@@ -417,41 +419,41 @@ namespace Paranoidal
                 // a version of a build for another game (2.0): the launcher has no build for it
                 var game = bi != null && bl == null && bi.FactorioVersion != null && !Lines.L21.Matches(bi.FactorioVersion) ? Paranoidal.BuildLine.MajorMinor(bi.FactorioVersion) : null;
                 return Tuple.Create(ci, bl, game);
-            }, res =>
+            }, async res =>
             {
                 Idle("");
                 var c = res.Item1;
-                if (c == null) { DarkDialog.Info(this, Tr.T("Версия хоста", "Host's version"), Tr.T("Версия не найдена на GitHub.", "The version was not found on GitHub."), Gui.Red); return; }
+                if (c == null) { await DarkDialog.Info(this, Tr.T("Версия хоста", "Host's version"), Tr.T("Версия не найдена на GitHub.", "The version was not found on GitHub."), Gui.Red); return; }
                 var bl = res.Item2;
-                if (res.Item3 != null) { OtherLineHost(null, res.Item3); return; }
-                if (bl != null && bl != Lines.Current) { OtherLineHost(bl, null); return; }
-                var r = DarkDialog.Ask(this, Tr.T("Версия хоста", "Host's version"),
+                if (res.Item3 != null) { await OtherLineHost(null, res.Item3); return; }
+                if (bl != null && bl != Lines.Current) { await OtherLineHost(bl, null); return; }
+                var r = await DarkDialog.Ask(this, Tr.T("Версия хоста", "Host's version"),
                     Tr.T("Перейти на версию сборки от ", "Switch to the build of ") + (c.Date == default(DateTime) ? "?" : Fmt.Date(c.Date)) + "?",
                     "«" + c.Message + "» (" + AppInfo.Short(c.Sha) + ")\n" +
                     Tr.T("Сейчас установлена: ", "Installed now: ") + (installed == null ? Tr.T("неизвестная версия", "an unknown version") : installedDate ?? AppInfo.Short(installed)) + ".\n" +
                     Tr.T("Скачается только разница. Текущая версия сохранится для отката.", "Only the difference is downloaded. The current version is kept for a rollback."),
                     null, Tr.T("Перейти", "Switch"), Tr.T("Отмена", "Cancel"), Gui.Title);
-                if (r == DialogResult.Yes) DoUpdate(false, c.Sha);
+                if (r == DialogResult.Yes) await DoUpdate(false, c.Sha);
             });
         }
 
         // ------------------------------------------------------------------ game start
 
-        void Play()
+        async Task Play()
         {
             if (fac == null || !fac.Ok)
             {
-                DarkDialog.Info(this, Tr.T("Версия Factorio", "Factorio version"), fac == null ? Tr.T("Для сборки нужна ", "The build needs ") + AppInfo.RequiredGame + "." : fac.Problem(), Gui.Red);
+                await DarkDialog.Info(this, Tr.T("Версия Factorio", "Factorio version"), fac == null ? Tr.T("Для сборки нужна ", "The build needs ") + AppInfo.RequiredGame + "." : fac.Problem(), Gui.Red);
                 return;
             }
-            if (FactorioInfo.IsRunning()) { DarkDialog.Info(this, "Factorio", Tr.T("Factorio уже запущена.", "Factorio is already running."), Gui.Orange); return; }
+            if (FactorioInfo.IsRunning()) { await DarkDialog.Info(this, "Factorio", Tr.T("Factorio уже запущена.", "Factorio is already running."), Gui.Orange); return; }
             if (!Pinned && remote != null && installed != null && remote != installed)
             {
-                var r = DarkDialog.Ask(this, Tr.T("Доступно обновление", "An update is available"), Tr.T("Вышла новая версия сборки. Обновить перед запуском?", "A new build version is out. Update before playing?"),
+                var r = await DarkDialog.Ask(this, Tr.T("Доступно обновление", "An update is available"), Tr.T("Вышла новая версия сборки. Обновить перед запуском?", "A new build version is out. Update before playing?"),
                     Tr.T("Если вы играете на сервере, где хост ещё не обновился, выберите «Играть без обновления» и включите «Не менять версию».",
                          "If you play on a server whose host has not updated yet, choose \"Play without updating\" and turn on \"Keep this version\"."), null,
                     Tr.T("Обновить и играть", "Update and play"), Tr.T("Играть без обновления", "Play without updating"), Gui.Title);
-                if (r == DialogResult.Yes) { DoUpdate(true, null); return; }
+                if (r == DialogResult.Yes) { await DoUpdate(true, null); return; }
                 if (r != DialogResult.No) return;
             }
             Launch();
@@ -499,10 +501,10 @@ namespace Paranoidal
                     " в info.json есть зависимость с «~» (ошибка Factorio, есть в 2.0.77 и 2.1.24: игра каждый раз пересобирает данные). Подробности в FAQ сборки, в вопросе о долгой загрузке.", LogKind.Warn);
         }
 
-        void StartGame()
+        async Task StartGame()
         {
             if (fac == null || !fac.Ok || modsDir == null) return;
-            if (FactorioInfo.IsRunning()) { DarkDialog.Info(this, "Factorio", Tr.T("Factorio уже запущена.", "Factorio is already running."), Gui.Orange); return; }
+            if (FactorioInfo.IsRunning()) { await DarkDialog.Info(this, "Factorio", Tr.T("Factorio уже запущена.", "Factorio is already running."), Gui.Orange); return; }
             try
             {
                 // the Space Age profile: its own config.ini (write-data = the profile folder)
@@ -522,19 +524,19 @@ namespace Paranoidal
             }
             catch (Exception ex)
             {
-                DarkDialog.Info(this, Tr.T("Не удалось запустить Factorio", "Could not start Factorio"), ex.Message, Gui.Red);
+                await DarkDialog.Info(this, Tr.T("Не удалось запустить Factorio", "Could not start Factorio"), ex.Message, Gui.Red);
             }
         }
 
         // ------------------------------------------------------------------ load diagnostics
 
-        void WatchGame()
+        async Task WatchGame()
         {
             bool running = FactorioInfo.IsRunning();
             if (gameRunning && !running) AnalyzeLoad();
             gameRunning = running;
             LogoArt.Paused = running || WindowState == WindowState.Minimized;
-            if (!running && selfUpdatePending && !busy) OfferSelfUpdate();
+            if (!running && selfUpdatePending && !busy) await OfferSelfUpdate();
         }
 
         /// <summary>Reads the game's last log (the game must be closed) and shows how the load went and why.</summary>
@@ -606,14 +608,23 @@ namespace Paranoidal
             return VersionLine.Build(installed, installedDate, modsDir, foreign, modified, found != null ? found.Fingerprint : null, en);
         }
 
-        void CopyCommit()
+        async Task CopyCommit()
         {
             string text, ru;
             try { text = BuildLine(Tr.En); ru = Tr.En ? BuildLine(false) : text; }
             catch (Exception ex) { lblDetail.Text = Tr.T("Не удалось собрать строку версии: ", "Could not build the version line: ") + ex.Message; return; }
             if (text == null) return;
             AppendLog(ru, LogKind.Info);
-            try { ClipText.SetText(this, text); lblDetail.Text = Tr.T("Строка скопирована и есть в «Журнале»: сверьте её с хостом или вставьте в сообщение о баге", "The line is copied and is in the Journal: compare it with the host or paste it into a bug report"); }
+            if (Clipboard == null)
+            {
+                lblDetail.Text = Tr.T("Не удалось скопировать: буфер обмена недоступен. Строка есть в «Журнале»", "Could not copy: the clipboard is not available. The line is in the Journal");
+                return;
+            }
+            try
+            {
+                await Clipboard.SetTextAsync(text);
+                lblDetail.Text = Tr.T("Строка скопирована и есть в «Журнале»: сверьте её с хостом или вставьте в сообщение о баге", "The line is copied and is in the Journal: compare it with the host or paste it into a bug report");
+            }
             catch (Exception ex) { lblDetail.Text = Tr.T("Не удалось скопировать: ", "Could not copy: ") + ex.Message; }
         }
 
@@ -648,9 +659,9 @@ namespace Paranoidal
             return sb.ToString();
         }
 
-        void DoReport()
+        async Task DoReport()
         {
-            var inp = Dialogs.AskReport(this, fac);
+            var inp = await Dialogs.AskReport(this, fac);
             if (inp == null) return;
             inp.Fac = fac;
             inp.ModsDir = modsDir;
@@ -674,14 +685,14 @@ namespace Paranoidal
                     try { var fe = engine.ForeignEntries(p); if (fe != null) inp.ForeignMods = VersionLine.Describe(mods, fe); } catch { }
                 }
                 return Report.Create(inp);
-            }, res =>
+            }, async res =>
             {
                 Idle(Tr.T("Отчёт готов", "The report is ready"));
                 lblDetail.Text = res.Zip + " (" + Fmt.Size(res.Size) + ")";
                 AppendLog("Отчёт о проблеме: " + res.Zip + " (" + Fmt.SizeRu(res.Size) + ", файлов " + res.Entries.Count + ")" +
                     (res.SaveAdded != null ? ", сейв " + Path.GetFileName(res.SaveAdded) : "") + (res.SaveSkippedRu != null ? "; сейв не добавлен: " + res.SaveSkippedRu : ""), LogKind.Ok);
                 if (res.SaveSkippedRu != null)
-                    DarkDialog.Info(this, Tr.T("Отчёт о проблеме", "Problem report"), Tr.T("Архив создан, но сейв не добавлен: ", "The archive is ready, but the save was not added: ") +
+                    await DarkDialog.Info(this, Tr.T("Отчёт о проблеме", "Problem report"), Tr.T("Архив создан, но сейв не добавлен: ", "The archive is ready, but the save was not added: ") +
                         Tr.T(res.SaveSkippedRu, res.SaveSkippedEn) + ".", Gui.Orange);
                 if (!Auto) { try { Shell.Reveal(res.Zip); } catch { } }
             });
@@ -689,57 +700,63 @@ namespace Paranoidal
 
         // ------------------------------------------------------------------ folders
 
-        void OpenMods()
+        async Task OpenMods()
         {
             if (modsDir == null || !Directory.Exists(modsDir)) return;
             try { Shell.OpenFolder(modsDir); }
-            catch (Exception ex) { DarkDialog.Info(this, Tr.T("Папка модов", "Mods folder"), Tr.T("Не удалось открыть папку: ", "Could not open the folder: ") + ex.Message + "\n" + modsDir, Gui.Red); }
+            catch (Exception ex) { await DarkDialog.Info(this, Tr.T("Папка модов", "Mods folder"), Tr.T("Не удалось открыть папку: ", "Could not open the folder: ") + ex.Message + "\n" + modsDir, Gui.Red); }
         }
 
-        void PickFactorio()
+        async Task PickFactorio()
         {
-            var dir = Pickers.Folder(this, Tr.T("Выберите папку ", "Choose the folder of ") + AppInfo.RequiredGame + Tr.T(" (в ней есть ", " (it has ") + FactorioInfo.ExeRelative + ")",
-                fac != null ? fac.Dir : null);
+            var dir = await StorageProvider.OpenFolderPickerAsync(new FolderPickerOpenOptions
+            {
+                Title = Tr.T("Выберите папку ", "Choose the folder of ") + AppInfo.RequiredGame + Tr.T(" (в ней есть ", " (it has ") + FactorioInfo.ExeRelative + ")",
+                SuggestedStartLocation = await StorageProvider.StartAt(fac != null ? fac.Dir : null),
+            }).LocalPath();
             if (dir == null) return;
             var f = FactorioInfo.Inspect(dir);
             if (f == null)
             {
-                DarkDialog.Info(this, Tr.T("Factorio не найдена", "Factorio not found"), Tr.T("В папке\n", "The folder\n") + dir + Tr.T("\nнет ", "\nhas no ") + FactorioInfo.ExeRelative + ".", Gui.Red);
+                await DarkDialog.Info(this, Tr.T("Factorio не найдена", "Factorio not found"), Tr.T("В папке\n", "The folder\n") + dir + Tr.T("\nнет ", "\nhas no ") + FactorioInfo.ExeRelative + ".", Gui.Red);
                 return;
             }
             if (!f.OkFor(Lines.L21))
             {
                 AppendLog("Выбрана папка " + f.Dir + ", она не подходит (" + f.Describe(false, Lines.L21) + ").", LogKind.Warn);
-                DarkDialog.Info(this, Tr.T("Версия Factorio", "Factorio version"), f.Problem(Lines.L21) + Tr.T("\n\nЛаунчер остаётся с прежней игрой.", "\n\nThe launcher stays with the previous game."), Gui.Red);
+                await DarkDialog.Info(this, Tr.T("Версия Factorio", "Factorio version"), f.Problem(Lines.L21) + Tr.T("\n\nЛаунчер остаётся с прежней игрой.", "\n\nThe launcher stays with the previous game."), Gui.Red);
                 return;
             }
             if (fac != null && Relocation.SameDir(f.Dir, fac.Dir)) return;
             AppendLog("Выбрана Factorio: " + f.Dir + " (" + f.Describe(false) + ")", LogKind.Ok);
             fac = f;
-            if (MaybeRelocate(null, true)) return;   // the copy in that game's folder takes over
+            if (await MaybeRelocate(null, true)) return;   // the copy in that game's folder takes over
             ForgetOtherGame();
             Settings.SetPath("factorio", f.Dir);
             // the Space Age profile belongs to a game folder: without one there the window goes back to 2.1
             ApplyLine(Lines.Current.SpaceAge && !GameProfile.SpaceAgeExists(f) ? Lines.L21 : Lines.Current);
         }
 
-        void PickMods()
+        async Task PickMods()
         {
-            if (Lines.Current.SpaceAge) { PickSpaceAgeFolder(null); return; }
-            var picked = Pickers.Folder(this, Tr.T("Выберите папку mods, которую нужно держать в соответствии со сборкой", "Choose the mods folder to keep in line with the build"),
-                modsDir ?? (fac != null ? fac.Dir : null));
+            if (Lines.Current.SpaceAge) { await PickSpaceAgeFolder(null); return; }
+            var picked = await StorageProvider.OpenFolderPickerAsync(new FolderPickerOpenOptions
+            {
+                Title = Tr.T("Выберите папку mods, которую нужно держать в соответствии со сборкой", "Choose the mods folder to keep in line with the build"),
+                SuggestedStartLocation = await StorageProvider.StartAt(modsDir ?? (fac != null ? fac.Dir : null)),
+            }).LocalPath();
             if (picked == null) return;
             var sel = picked.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
             if (!Path.GetFileName(sel).Equals("mods", StringComparison.OrdinalIgnoreCase))
             {
-                var r = DarkDialog.Ask(this, Tr.T("Папка модов", "Mods folder"), Tr.T("Папка модов должна называться mods.", "The mods folder must be named mods."),
+                var r = await DarkDialog.Ask(this, Tr.T("Папка модов", "Mods folder"), Tr.T("Папка модов должна называться mods.", "The mods folder must be named mods."),
                     Tr.T("Использовать папку\n", "Use the folder\n") + Path.Combine(sel, "mods") + Tr.T("\n(она будет создана при обновлении)?", "\n(it is created by the update)?"),
                     null, Tr.T("Да", "Yes"), Tr.T("Нет", "No"), Gui.Title);
                 if (r != DialogResult.Yes) return;
                 sel = Path.Combine(sel, "mods");
             }
             var err = SyncPaths.Validate(sel);
-            if (err != null) { DarkDialog.Info(this, Tr.T("Папка модов", "Mods folder"), err, Gui.Red); return; }
+            if (err != null) { await DarkDialog.Info(this, Tr.T("Папка модов", "Mods folder"), err, Gui.Red); return; }
             modsDir = sel;
             Settings.SetPath("mods", modsDir);
             AppendLog("Папка модов: " + modsDir, LogKind.Info);
@@ -752,40 +769,44 @@ namespace Paranoidal
         /// there (a rename on the same disk, a copy on another one). An existing profile there is used after a question;
         /// without an installed build only the place is remembered. `preset`: tests (PARANOIDAL_LAUNCHER_TEST_SA_FOLDER).
         /// </summary>
-        void PickSpaceAgeFolder(string preset)
+        async Task PickSpaceAgeFolder(string preset)
         {
             if (busy || fac == null || engine == null) return;
             if (FactorioInfo.IsRunning())
             {
-                DarkDialog.Info(this, Tr.T("Factorio запущена", "Factorio is running"), Tr.T("Закройте игру и выберите папку снова.", "Close the game and choose the folder again."), Gui.Orange);
+                await DarkDialog.Info(this, Tr.T("Factorio запущена", "Factorio is running"), Tr.T("Закройте игру и выберите папку снова.", "Close the game and choose the folder again."), Gui.Orange);
                 return;
             }
             var from = GameProfile.SpaceAgeRoot(fac);
-            var dir = preset ?? Pickers.Folder(this, Tr.T("Выберите папку, в которой будет лежать профиль Space Age (папка " + GameProfile.SpaceAgeFolder + ")",
-                "Choose the folder for the Space Age profile (the " + GameProfile.SpaceAgeFolder + " folder)"), from != null ? Path.GetDirectoryName(from) : fac.Dir);
+            var dir = preset ?? await StorageProvider.OpenFolderPickerAsync(new FolderPickerOpenOptions
+            {
+                Title = Tr.T("Выберите папку, в которой будет лежать профиль Space Age (папка " + GameProfile.SpaceAgeFolder + ")",
+                    "Choose the folder for the Space Age profile (the " + GameProfile.SpaceAgeFolder + " folder)"),
+                SuggestedStartLocation = await StorageProvider.StartAt(from != null ? Path.GetDirectoryName(from) : fac.Dir),
+            }).LocalPath();
             if (dir == null || from == null) return;
             var f = fac;
             // tests: the launcher closes when the choice ends without a move (with one it closes after the status check)
             Action end = () => { if (Auto) CloseLater(); };
-            RunOp(() => GameProfile.PlanMove(from, dir, GameProfile.MainMods(f), f.Dir), plan =>
+            RunOp(() => GameProfile.PlanMove(from, dir, GameProfile.MainMods(f), f.Dir), async plan =>
             {
                 if (plan.Same)
                 {
                     AppendLog("Профиль Space Age уже лежит в " + plan.To + ".", LogKind.Muted);
-                    DarkDialog.Info(this, Tr.T("Профиль Space Age", "Space Age profile"), Tr.T("Профиль уже лежит здесь: ", "The profile is here already: ") + plan.To, Gui.Green);
+                    await DarkDialog.Info(this, Tr.T("Профиль Space Age", "Space Age profile"), Tr.T("Профиль уже лежит здесь: ", "The profile is here already: ") + plan.To, Gui.Green);
                     end();
                     return;
                 }
                 if (plan.Error != null)
                 {
                     AppendLog("Профиль Space Age не перенесён в " + plan.To + ": " + plan.Error, LogKind.Warn);
-                    DarkDialog.Info(this, Tr.T("Профиль Space Age", "Space Age profile"), Tr.T(plan.Error, plan.ErrorEn), Gui.Red);
+                    await DarkDialog.Info(this, Tr.T("Профиль Space Age", "Space Age profile"), Tr.T(plan.Error, plan.ErrorEn), Gui.Red);
                     end();
                     return;
                 }
                 if (plan.TargetIsProfile)
                 {
-                    if (!Dialogs.ConfirmUseProfile(this, plan)) { end(); return; }
+                    if (!await Dialogs.ConfirmUseProfile(this, plan)) { end(); return; }
                     Settings.SetPath("sa-root", plan.To);
                     AppendLog("Профиль Space Age: теперь используется " + plan.To + ", прежний " + plan.From + " остался на месте.", LogKind.Ok);
                     ApplyLine(Lines.SA);
@@ -799,7 +820,7 @@ namespace Paranoidal
                     ApplyLine(Lines.SA);
                     return;
                 }
-                if (!Dialogs.ConfirmProfileMove(this, plan)) { end(); return; }
+                if (!await Dialogs.ConfirmProfileMove(this, plan)) { end(); return; }
                 autoCloseAfterUpdate = Auto;   // tests: a failed move closes the launcher too
                 AppendLog("Переношу профиль Space Age: " + plan.From + " → " + plan.To + " (" + Fmt.SizeRu(plan.Bytes) + (plan.SameVolume ? ", тот же диск" : ", другой диск") + ").", LogKind.Info);
                 RunOp(() =>
@@ -845,16 +866,16 @@ namespace Paranoidal
                 try { File.AppendAllText(TestAuto, "=== " + AppInfo.Version + " pid " + Environment.ProcessId + " " + SelfUpdate.CurrentExe + Environment.NewLine + rtbLog.Text.Replace("\n", Environment.NewLine) + Environment.NewLine); } catch { }
             if (restarting || closeConfirmed || !busy) { base.OnClosing(e); return; }
             e.Cancel = true;
-            Dispatcher.UIThread.Post(() =>
+            Dispatcher.UIThread.Post(async () =>
             {
                 if (!busy) { closeConfirmed = true; Close(); return; }
                 if (!cancelable)
                 {
-                    DarkDialog.Info(this, Tr.T("Подождите", "Please wait"), Tr.T("Идёт раскладка файлов в папке mods. Закройте программу, когда она закончит.",
+                    await DarkDialog.Info(this, Tr.T("Подождите", "Please wait"), Tr.T("Идёт раскладка файлов в папке mods. Закройте программу, когда она закончит.",
                         "Files are being written into the mods folder. Close the launcher when it finishes."), Gui.Orange);
                     return;
                 }
-                var r = DarkDialog.Ask(this, Tr.T("Идёт обновление", "An update is running"), Tr.T("Прервать обновление и закрыть программу?", "Stop the update and close the launcher?"),
+                var r = await DarkDialog.Ask(this, Tr.T("Идёт обновление", "An update is running"), Tr.T("Прервать обновление и закрыть программу?", "Stop the update and close the launcher?"),
                     Tr.T("Файлы модов не изменятся, уже скачанное сохранится.", "The mod files do not change; what was downloaded is kept."),
                     null, Tr.T("Прервать и закрыть", "Stop and close"), Tr.T("Продолжить", "Continue"), Gui.Title, ButtonKind.Danger);
                 if (r != DialogResult.Yes) return;

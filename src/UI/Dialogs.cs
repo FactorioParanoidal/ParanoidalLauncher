@@ -2,10 +2,13 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
+using System.Threading.Tasks;
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Input;
+using Avalonia.Input.Platform;
 using Avalonia.Media;
+using Avalonia.Platform.Storage;
 
 namespace Paranoidal
 {
@@ -18,10 +21,11 @@ namespace Paranoidal
         /// <summary>UI tests only: receives the dialog instead of showing it (the dialog then returns "cancelled").</summary>
         public static Action<Window> TestSnapshot;
 
-        static void Show(DialogWindow f, Window owner)
+        static Task Show(DialogWindow f, Window owner)
         {
-            if (TestSnapshot != null) TestSnapshot(f);
-            else Modal.Run(f, owner);
+            if (TestSnapshot == null) return f.ShowFor(owner);
+            TestSnapshot(f);
+            return Task.CompletedTask;
         }
 
         /// <summary>A dialog being built: controls go into the pane P at pane coordinates; Y is the next free line.</summary>
@@ -113,7 +117,7 @@ namespace Paranoidal
         }
 
         /// <summary>Report options. Null: cancelled.</summary>
-        public static Report.Input AskReport(Window owner, FactorioInfo fac)
+        public static async Task<Report.Input> AskReport(Window owner, FactorioInfo fac)
         {
             var fr = Open(Tr.T("Отчёт о проблеме", "Problem report"), Tr.T("ZIP-архив для Discord сборки", "A ZIP archive for the modpack Discord"),
                 Tr.T("Лаунчер положит архив на рабочий стол. В нём будут логи игры (этот и прошлый запуск), строка версии, mod-list.json, mod-settings.dat, " +
@@ -141,7 +145,7 @@ namespace Paranoidal
                 "The archive stays under 20 MB, the Discord limit. A save that does not fit is left out, and the launcher shows where it is so you can attach it separately."), Gui.Muted);
             var ok = Buttons(fr, Tr.T("Создать архив", "Create the archive"));
             Report.Input result = null;
-            ok.Click += () =>
+            ok.Click += async () =>
             {
                 var inp = new Report.Input { Save = Report.SaveChoice.None };
                 if (chk.Checked)
@@ -152,7 +156,20 @@ namespace Paranoidal
                     {
                         var wd = Report.WriteData(fac);
                         var saves = wd != null && Directory.Exists(Path.Combine(wd, "saves")) ? Path.Combine(wd, "saves") : null;
-                        var file = Pickers.File(fr.F, Tr.T("Выберите сейв", "Choose a save"), saves, Tr.T("Сейвы Factorio (*.zip)", "Factorio saves (*.zip)"), "*.zip");
+                        var sp = fr.F.StorageProvider;
+                        // the button waits for the system dialog: a second click does not open another one
+                        ok.IsEnabled = false;
+                        string file;
+                        try
+                        {
+                            file = await sp.OpenFilePickerAsync(new FilePickerOpenOptions
+                            {
+                                Title = Tr.T("Выберите сейв", "Choose a save"),
+                                SuggestedStartLocation = await sp.StartAt(saves),
+                                FileTypeFilter = new[] { new FilePickerFileType(Tr.T("Сейвы Factorio (*.zip)", "Factorio saves (*.zip)")) { Patterns = new[] { "*.zip" } } },
+                            }).LocalPath();
+                        }
+                        finally { ok.IsEnabled = true; }
                         if (file == null) return;
                         inp.Save = Report.SaveChoice.Chosen;
                         inp.SavePath = file;
@@ -161,7 +178,7 @@ namespace Paranoidal
                 result = inp;
                 fr.F.Finish(DialogResult.OK);
             };
-            Show(fr.F, owner);
+            await Show(fr.F, owner);
             return result;
         }
 
@@ -170,7 +187,7 @@ namespace Paranoidal
         /// recommendation to update; asked on every start until updated (no "never" option, by the owner's decision).
         /// True: update now.
         /// </summary>
-        public static bool AskSelfUpdate(Window owner, ReleaseInfo r, bool needsAdmin)
+        public static async Task<bool> AskSelfUpdate(Window owner, ReleaseInfo r, bool needsAdmin)
         {
             var since = r.Since(AppInfo.Version);
             var versions = string.Join(", ", since.Select(c => c.Version).Reverse());
@@ -197,7 +214,7 @@ namespace Paranoidal
             var ok = Buttons(fr, Tr.T("Обновить сейчас", "Update now"), Tr.T("Позже", "Later"));
             bool result = false;
             ok.Click += () => { result = true; fr.F.Finish(DialogResult.OK); };
-            Show(fr.F, owner);
+            await Show(fr.F, owner);
             return result;
         }
 
@@ -219,7 +236,7 @@ namespace Paranoidal
         /// Several suitable game installations: which one is the player's (the launcher moves itself there and uses it).
         /// Null: not now.
         /// </summary>
-        public static FactorioInfo ChooseInstall(Window owner, List<FactorioInfo> list)
+        public static async Task<FactorioInfo> ChooseInstall(Window owner, List<FactorioInfo> list)
         {
             var fr = Open(Tr.T("Папка игры", "Game folder"), Tr.T("Найдено несколько подходящих установок ", "Several suitable installations of ") + AppInfo.RequiredGame,
                 Tr.T("Лаунчер должен лежать в папке той игры, в которую вы играете со сборкой. " +
@@ -242,7 +259,7 @@ namespace Paranoidal
                 result = list[i];
                 fr.F.Finish(DialogResult.OK);
             };
-            Show(fr.F, owner);
+            await Show(fr.F, owner);
             return result;
         }
 
@@ -250,7 +267,7 @@ namespace Paranoidal
         /// The first switch to the Space Age build (1.5.0): what the profile is, what is copied once, the saves as a
         /// choice, the disk space. Null: cancelled; otherwise whether to copy the saves of the main build.
         /// </summary>
-        public static bool? ConfirmSpaceAge(Window owner, GameProfile.SpaceAgePlan p, FactorioInfo fac)
+        public static async Task<bool?> ConfirmSpaceAge(Window owner, GameProfile.SpaceAgePlan p, FactorioInfo fac)
         {
             Func<string, string, string> T = Tr.T;
             var fr = Open("Paranoidal 2.1 Space Age", T("Установить Paranoidal 2.1 Space Age?", "Install Paranoidal 2.1 Space Age?"),
@@ -288,12 +305,12 @@ namespace Paranoidal
             check();
             bool? result = null;
             ok.Click += () => { result = chk.Checked; fr.F.Finish(DialogResult.OK); };
-            Show(fr.F, owner);
+            await Show(fr.F, owner);
             return result;
         }
 
         /// <summary>The move of the Space Age profile to another folder (GameProfile.PlanMove). True: «Перенести».</summary>
-        public static bool ConfirmProfileMove(Window owner, GameProfile.MovePlan p)
+        public static async Task<bool> ConfirmProfileMove(Window owner, GameProfile.MovePlan p)
         {
             Func<string, string, string> T = Tr.T;
             var sub = T("Из: ", "From: ") + p.From + "\n" + T("В: ", "To: ") + p.To + "\n\n" +
@@ -303,21 +320,21 @@ namespace Paranoidal
                                                 "The profile goes to another disk: it is copied, and the old folder is deleted only after the full copy. It takes a few minutes.")) +
                 (p.OutsideGame ? "\n" + T("Профиль будет лежать вне папки игры: если копировать папку игры на другой компьютер, профиль Space Age нужно переносить отдельно.",
                                           "The profile will be outside the game folder: when you copy the game folder to another PC, move the Space Age profile separately.") : "");
-            return DarkDialog.Ask(owner, T("Профиль Space Age", "Space Age profile"), T("Перенести профиль Space Age?", "Move the Space Age profile?"), sub, null,
+            return await DarkDialog.Ask(owner, T("Профиль Space Age", "Space Age profile"), T("Перенести профиль Space Age?", "Move the Space Age profile?"), sub, null,
                 T("Перенести", "Move"), T("Отмена", "Cancel"), Gui.Title) == DialogResult.Yes;
         }
 
         /// <summary>The chosen folder already has a Space Age profile. True: use it (the current one stays where it is).</summary>
-        public static bool ConfirmUseProfile(Window owner, GameProfile.MovePlan p)
+        public static async Task<bool> ConfirmUseProfile(Window owner, GameProfile.MovePlan p)
         {
             Func<string, string, string> T = Tr.T;
-            return DarkDialog.Ask(owner, T("Профиль Space Age", "Space Age profile"), T("В этой папке уже есть профиль Space Age", "This folder already has a Space Age profile"),
+            return await DarkDialog.Ask(owner, T("Профиль Space Age", "Space Age profile"), T("В этой папке уже есть профиль Space Age", "This folder already has a Space Age profile"),
                 p.To + "\n\n" + T("Использовать его? Лаунчер ничего не перенесёт и не перезапишет, а профиль из папки\n", "Use it? The launcher moves and overwrites nothing; the profile in\n") +
                 p.From + T("\nостанется на месте.", "\nstays where it is."), null, T("Использовать", "Use it"), T("Отмена", "Cancel"), Gui.Title) == DialogResult.Yes;
         }
 
         /// <summary>The host's version line. Null: cancelled.</summary>
-        public static string AskHostLine(Window owner)
+        public static async Task<string> AskHostLine(Window owner)
         {
             var fr = Open(Tr.T("Версия хоста", "Host's version"), Tr.T("Перейти на версию сборки хоста", "Switch to the host's build version"),
                 Tr.T("Попросите хоста нажать «Скопировать версию» и вставьте его строку сюда. Лаунчер скачает ровно эту версию сборки " +
@@ -338,9 +355,10 @@ namespace Paranoidal
                 Padding = new Thickness(4, 2),
                 Tag = Card.DeepTag,
             };
+            // a host's line on the clipboard is pasted already; no clipboard (or no text on it) leaves the box empty
             try
             {
-                var clip = owner != null ? ClipText.GetText(owner) : null;
+                var clip = owner != null && owner.Clipboard != null ? await owner.Clipboard.TryGetTextAsync() : null;
                 if (clip != null && VersionLine.ParseHost(clip) != null) box.Text = clip.Trim();
             }
             catch { }
@@ -368,7 +386,7 @@ namespace Paranoidal
                 fr.F.Finish(DialogResult.OK);
             };
             fr.F.Opened += (s, e) => box.Focus();
-            Show(fr.F, owner);
+            await Show(fr.F, owner);
             return result;
         }
     }

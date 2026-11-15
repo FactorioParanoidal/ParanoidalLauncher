@@ -16,7 +16,7 @@ namespace Paranoidal
         /// Every change of the launcher bumps it and gets a section in CHANGELOG.md; build.ps1 refuses to build
         /// a different exe under an already built version (README.md, «Версии»).
         /// </summary>
-        public const string Version = "1.6.0";
+        public const string Version = "1.6.1";
         public const string AssemblyVersion = Version + ".0";
         public const string Owner = "FactorioParanoidal";
         public const string RepoName = "ParanoidalModpack";

@@ -58,8 +58,8 @@ these documents are in English; texts players see are RU/EN; `README.md` and `CH
 | `src/UI/StartScreen.cs` | `LogoArt` (the animated logo, one GIF for every view), `BuildCard`, `LineTab`, `StartPanel` (choice of the build / no suitable Factorio / wait) |
 | `src/UI/Gui.cs` | the vanilla Factorio look (rule 20): colours of the 2.1.24 GUI atlas, fonts, drawing helpers (text, frames, bevels, status dots) |
 | `src/UI/Controls.cs` | `Lay.Place` (absolute layout), `DrawCanvas` (a Canvas that paints itself: `Panel.Render` is sealed in Avalonia 12), `FButton`, `Card` (pane), `Lbl`, `StatusLine`, `FCheck`/`FRadio`, `HeaderPanel`, `FProgress`, `LogBox`, `FList`, `Tips` |
-| `src/UI/DarkDialog.cs`, `src/UI/Dialogs.cs` | dialog windows of the game's look; dialogs with input (report, host's version, choice of installation, Space Age, profile move) |
-| `src/UI/Native.cs` | `Modal` (synchronous dialogs on a nested dispatcher frame), `Pickers` (system folder/file dialogs), `Shell` (open links, folders), `ClipText`, Discord mark, `SingleInstance` (named pipe) |
+| `src/UI/DarkDialog.cs`, `src/UI/Dialogs.cs` | dialog windows of the game's look, awaited (`await DarkDialog.Ask(...)`, the owner is modal meanwhile); dialogs with input (report, host's version, choice of installation, Space Age, profile move) |
+| `src/UI/Native.cs` | `PickerPaths` (start folder and local path for the StorageProvider pickers called in place), `Shell` (open links, folders), Discord mark, `SingleInstance` (named pipe, async listener) |
 | `tools/Harness/` | console driver of the engine (`Harness.cs`, usage at its top); references the launcher project |
 | `tools/UiShot/` | dialogs, start views and the main window rendered to PNG by Avalonia.Headless + Skia (no window on the desktop); references the launcher project |
 | `tools/testdata/`, `tools/release-manifest.ps1` | reference logs; release.json writer (PowerShell) |
@@ -190,7 +190,7 @@ Each one was chosen after a real problem; the reasons are what you need when a "
     one distinctive element). The logo is the animated PARANOIDAL GIF made by the team (owner, 2026-11-10; no author
     credit), for Space Age with the SPACE AGE plate cut from the game's logo; no "2.1" in the logo. The controls are
     drawn in code (`src/UI/Gui.cs`, `Controls.cs`), the same on every OS. Folder choice is the system dialog
-    (`Pickers`: the Explorer-style window on Windows, the desktop portal or GTK dialog on Linux), never the old
+    (Avalonia's `StorageProvider`: the Explorer-style window on Windows, the desktop portal or GTK dialog on Linux), never the old
     "Browse for folder" tree. Every text the player sees follows the humanizer rules
     (https://github.com/blader/humanizer): no em/en dashes as connectors, no glyphs as decoration, no ALL CAPS, no
     "not X but Y", plain verbs. Check new texts with `test-runs/launcher150-20261110/tools/literals.py` of the workspace
