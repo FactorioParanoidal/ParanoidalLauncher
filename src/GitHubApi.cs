@@ -5,7 +5,6 @@ using System.Globalization;
 using System.IO;
 using System.Net;
 using System.Text;
-using System.Web.Script.Serialization;
 
 namespace Paranoidal
 {
@@ -33,7 +32,7 @@ namespace Paranoidal
             {
                 using (var resp = (HttpWebResponse)req.GetResponse())
                 using (var r = new StreamReader(resp.GetResponseStream(), Encoding.UTF8))
-                    return new JavaScriptSerializer { MaxJsonLength = int.MaxValue }.DeserializeObject(r.ReadToEnd());
+                    return Json.Parse(r.ReadToEnd());
             }
             catch (WebException ex)
             {

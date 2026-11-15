@@ -8,7 +8,6 @@ using System.Linq;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.RegularExpressions;
-using System.Web.Script.Serialization;
 
 namespace Paranoidal
 {
@@ -156,7 +155,7 @@ namespace Paranoidal
             {
                 var path = Path.Combine(modsDir, "mod-list.json");
                 if (!File.Exists(path)) return null;
-                var root = new JavaScriptSerializer { MaxJsonLength = int.MaxValue }.DeserializeObject(File.ReadAllText(path, Encoding.UTF8)) as IDictionary<string, object>;
+                var root = Json.Parse(File.ReadAllText(path, Encoding.UTF8)) as IDictionary<string, object>;
                 object arr;
                 if (root == null || !root.TryGetValue("mods", out arr) || !(arr is IEnumerable)) return null;
                 var res = new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase);

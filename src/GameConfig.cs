@@ -6,7 +6,6 @@ using System.IO.Compression;
 using System.Linq;
 using System.Text;
 using System.Text.RegularExpressions;
-using System.Web.Script.Serialization;
 
 namespace Paranoidal
 {
@@ -336,11 +335,10 @@ namespace Paranoidal
         {
             var result = new List<string>();
             if (modsDir == null || !Directory.Exists(modsDir)) return result;
-            var ser = new JavaScriptSerializer { MaxJsonLength = int.MaxValue };
             var disabled = new HashSet<string>(StringComparer.Ordinal);
             try
             {
-                var root = ser.DeserializeObject(File.ReadAllText(Path.Combine(modsDir, "mod-list.json"), Encoding.UTF8)) as IDictionary<string, object>;
+                var root = Json.Parse(File.ReadAllText(Path.Combine(modsDir, "mod-list.json"), Encoding.UTF8)) as IDictionary<string, object>;
                 object arr;
                 if (root != null && root.TryGetValue("mods", out arr) && arr is IEnumerable)
                     foreach (var o in (IEnumerable)arr)
@@ -375,7 +373,7 @@ namespace Paranoidal
             {
                 try
                 {
-                    var info = ser.DeserializeObject(json) as IDictionary<string, object>;
+                    var info = Json.Parse(json) as IDictionary<string, object>;
                     object n, deps;
                     if (info == null || !info.TryGetValue("name", out n) || !(n is string) || disabled.Contains((string)n)) continue;
                     if (info.TryGetValue("dependencies", out deps) && deps is IEnumerable && !(deps is string))

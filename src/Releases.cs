@@ -8,7 +8,6 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading.Tasks;
-using System.Web.Script.Serialization;
 
 namespace Paranoidal
 {
@@ -128,7 +127,7 @@ namespace Paranoidal
 
         public static ReleaseInfo ParseManifest(string text, string repo, string product, string file)
         {
-            var d = new JavaScriptSerializer().DeserializeObject(text) as IDictionary<string, object>;
+            var d = Json.Parse(text) as IDictionary<string, object>;
             if (d == null) throw new Exception(repo + "/" + Manifest + ": не JSON");
             Func<string, string> S = k => { object o; return d.TryGetValue(k, out o) && o != null ? Convert.ToString(o, System.Globalization.CultureInfo.InvariantCulture) : null; };
             var info = new ReleaseInfo

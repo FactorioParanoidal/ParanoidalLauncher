@@ -23,7 +23,7 @@ namespace Paranoidal
         {
             get
             {
-                try { return Path.GetFullPath(Assembly.GetEntryAssembly().Location); }
+                try { return Path.GetFullPath(Environment.ProcessPath); }
                 catch { return Path.Combine(AppInfo.ExeDir, AppInfo.ExeName); }
             }
         }

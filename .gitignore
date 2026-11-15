@@ -3,3 +3,6 @@
 /test-runs/
 ParanoidalLauncher-data/
 *.user
+/tools/Harness/bin/
+/tools/Harness/obj/
+bin/

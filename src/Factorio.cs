@@ -166,34 +166,37 @@ namespace Paranoidal
                 }
                 yield break;
             }
-            try
-            {
-                using (var k = Registry.CurrentUser.OpenSubKey(@"Software\Valve\Steam"))
-                {
-                    var sp = k == null ? null : k.GetValue("SteamPath") as string;
-                    if (sp != null)
-                    {
-                        sp = sp.Replace('/', '\\');
-                        c.Add(Path.Combine(sp, "steamapps", "common", "Factorio"));
-                        var vdf = Path.Combine(sp, "steamapps", "libraryfolders.vdf");
-                        if (File.Exists(vdf))
-                            foreach (Match m in Regex.Matches(File.ReadAllText(vdf), "\"path\"\\s+\"([^\"]+)\""))
-                                c.Add(Path.Combine(m.Groups[1].Value.Replace(@"\\", @"\"), "steamapps", "common", "Factorio"));
-                    }
-                }
-            }
-            catch { }
-            foreach (var key in new[] { @"SOFTWARE\WOW6432Node\GOG.com\Games\1238653230", @"SOFTWARE\GOG.com\Games\1238653230" })
+            if (OperatingSystem.IsWindows())
             {
                 try
                 {
-                    using (var k = Registry.LocalMachine.OpenSubKey(key))
+                    using (var k = Registry.CurrentUser.OpenSubKey(@"Software\Valve\Steam"))
                     {
-                        var p = k == null ? null : k.GetValue("path") as string;
-                        if (p != null) c.Add(p);
+                        var sp = k == null ? null : k.GetValue("SteamPath") as string;
+                        if (sp != null)
+                        {
+                            sp = sp.Replace('/', '\\');
+                            c.Add(Path.Combine(sp, "steamapps", "common", "Factorio"));
+                            var vdf = Path.Combine(sp, "steamapps", "libraryfolders.vdf");
+                            if (File.Exists(vdf))
+                                foreach (Match m in Regex.Matches(File.ReadAllText(vdf), "\"path\"\\s+\"([^\"]+)\""))
+                                    c.Add(Path.Combine(m.Groups[1].Value.Replace(@"\\", @"\"), "steamapps", "common", "Factorio"));
+                        }
                     }
                 }
                 catch { }
+                foreach (var key in new[] { @"SOFTWARE\WOW6432Node\GOG.com\Games\1238653230", @"SOFTWARE\GOG.com\Games\1238653230" })
+                {
+                    try
+                    {
+                        using (var k = Registry.LocalMachine.OpenSubKey(key))
+                        {
+                            var p = k == null ? null : k.GetValue("path") as string;
+                            if (p != null) c.Add(p);
+                        }
+                    }
+                    catch { }
+                }
             }
             foreach (var drive in DriveInfo.GetDrives())
             {

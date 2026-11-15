@@ -4,7 +4,6 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Text;
-using System.Web.Script.Serialization;
 
 namespace Paranoidal
 {
@@ -27,14 +26,13 @@ namespace Paranoidal
         {
             Directory.CreateDirectory(modsDir);
             var path = Path.Combine(modsDir, "mod-list.json");
-            var ser = new JavaScriptSerializer { MaxJsonLength = int.MaxValue };
             List<Dictionary<string, object>> mods = null;
 
             if (File.Exists(path))
             {
                 try
                 {
-                    var root = ser.DeserializeObject(File.ReadAllText(path, Encoding.UTF8)) as IDictionary<string, object>;
+                    var root = Json.Parse(File.ReadAllText(path, Encoding.UTF8)) as IDictionary<string, object>;
                     object arr;
                     if (root != null && root.TryGetValue("mods", out arr) && arr is IEnumerable)
                     {
@@ -71,7 +69,7 @@ namespace Paranoidal
                         if (changed) changes.Add(want.Key + (want.Value ? " включён" : " выключен"));
                     }
                     if (changes.Count == 0) return;
-                    Write(path, mods, ser);
+                    Write(path, mods);
                     log("mod-list.json: " + string.Join(", ", changes) + ".", LogKind.Ok);
                     return;
                 }
@@ -79,18 +77,18 @@ namespace Paranoidal
 
             mods = new List<Dictionary<string, object>> { Entry("base", true) };
             foreach (var want in Dlc.OrderBy(d => d.Key, StringComparer.Ordinal)) mods.Add(Entry(want.Key, want.Value));
-            Write(path, mods, ser);
+            Write(path, mods);
             log("Создан mod-list.json: " + StatesRu() + ".", LogKind.Ok);
         }
 
         static Dictionary<string, object> Entry(string name, bool enabled) =>
             new Dictionary<string, object> { { "name", name }, { "enabled", enabled } };
 
-        static void Write(string path, List<Dictionary<string, object>> mods, JavaScriptSerializer ser)
+        static void Write(string path, List<Dictionary<string, object>> mods)
         {
             var sb = new StringBuilder("{\n  \"mods\": [\n");
             for (int i = 0; i < mods.Count; i++)
-                sb.Append("    ").Append(ser.Serialize(mods[i])).Append(i + 1 < mods.Count ? ",\n" : "\n");
+                sb.Append("    ").Append(Json.Write(mods[i])).Append(i + 1 < mods.Count ? ",\n" : "\n");
             sb.Append("  ]\n}\n");
             var tmp = path + ".tmp";
             File.WriteAllText(tmp, sb.ToString(), new UTF8Encoding(false));

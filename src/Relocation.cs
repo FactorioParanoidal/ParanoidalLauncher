@@ -254,6 +254,7 @@ namespace Paranoidal
 
         public static void Create(string lnk, string target, string workDir, string description)
         {
+            if (!OperatingSystem.IsWindows()) throw new PlatformNotSupportedException("ярлыки .lnk есть только в Windows");
             Directory.CreateDirectory(Path.GetDirectoryName(lnk));
             var link = (IShellLinkW)new CShellLink();
             try
@@ -270,6 +271,7 @@ namespace Paranoidal
         /// <summary>Target of a shortcut (tests and the check whether the desktop shortcut is ours).</summary>
         public static string TargetOf(string lnk)
         {
+            if (!OperatingSystem.IsWindows()) return null;
             var link = (IShellLinkW)new CShellLink();
             try
             {

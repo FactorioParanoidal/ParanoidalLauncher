@@ -51,6 +51,7 @@ namespace Paranoidal
             catch { }
             try { if (Array.IndexOf(Regions, new RegionInfo(CultureInfo.CurrentCulture.Name).TwoLetterISORegionName) >= 0) return true; }
             catch { }
+            if (!OperatingSystem.IsWindows()) return false;
             try
             {
                 var geo = GetUserGeoID(16);   // GEOCLASS_NATION

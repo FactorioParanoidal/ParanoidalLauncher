@@ -199,6 +199,7 @@ namespace Paranoidal
         /// <summary>"Windows 10 Enterprise LTSC 2019 (1809, build 17763.1234)": Environment.OSVersion says 6.2 without a manifest entry.</summary>
         static string WindowsVersion()
         {
+            if (!OperatingSystem.IsWindows()) return System.Runtime.InteropServices.RuntimeInformation.OSDescription;
             try
             {
                 using (var k = Microsoft.Win32.Registry.LocalMachine.OpenSubKey(@"SOFTWARE\Microsoft\Windows NT\CurrentVersion"))
