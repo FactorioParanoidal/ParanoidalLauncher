@@ -74,6 +74,9 @@ namespace Paranoidal
             Tr.T("factorio.com: раздел Download.", "factorio.com: the Download page."),
         };
 
+        /// <summary>The game's executable inside its folder: bin\x64\factorio.exe on Windows, bin/x64/factorio elsewhere.</summary>
+        public static readonly string ExeRelative = Path.Combine("bin", "x64", OperatingSystem.IsWindows() ? "factorio.exe" : "factorio");
+
         /// <summary>Accepts the Factorio folder itself or any folder inside it (bin, bin\x64, mods…).</summary>
         public static FactorioInfo Inspect(string path)
         {
@@ -84,10 +87,10 @@ namespace Paranoidal
                 for (int i = 0; i < 3 && d != null; i++, d = d.Parent)
                 {
                     if (!d.Exists) continue;
-                    var exe = Path.Combine(d.FullName, "bin", "x64", "factorio.exe");
+                    var exe = Path.Combine(d.FullName, ExeRelative);
                     if (File.Exists(exe))
                     {
-                        var fi = new FactorioInfo { Dir = d.FullName.TrimEnd('\\'), Exe = exe, Version = ReadVersion(d.FullName, exe) };
+                        var fi = new FactorioInfo { Dir = d.FullName.TrimEnd(Path.DirectorySeparatorChar), Exe = exe, Version = ReadVersion(d.FullName, exe) };
                         foreach (var dlc in AllDlc)
                             if (fi.Version != null && fi.Version == ReadModVersion(Path.Combine(d.FullName, "data", dlc, "info.json")))
                                 fi.dlcOk.Add(dlc);

@@ -1,0 +1,35 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- UI pictures tool (not shipped): the window and dialogs of src/UI rendered to PNG by Avalonia.Headless with Skia, so a
+       test never shows a window on the desktop or takes the focus from a game. Usage at the top of tools/UiShot.cs.
+       dotnet build tools/UiShot -c Release; then run bin/Release/net10.0/UiShot. -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <AssemblyName>UiShot</AssemblyName>
+    <RootNamespace>Paranoidal</RootNamespace>
+    <LangVersion>latest</LangVersion>
+    <Nullable>disable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+    <InvariantGlobalization>false</InvariantGlobalization>
+    <NoWarn>$(NoWarn);SYSLIB0014;CS0649</NoWarn>
+    <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Avalonia" Version="12.1.6" />
+    <PackageReference Include="Avalonia.Desktop" Version="12.1.6" />
+    <PackageReference Include="Avalonia.Themes.Simple" Version="12.1.6" />
+    <PackageReference Include="Avalonia.Headless" Version="12.1.6" />
+  </ItemGroup>
+  <ItemGroup>
+    <Compile Include="../../src/*.cs" Exclude="../../src/Program.cs;../../src/MainForm.cs;../../src/Ui.cs;../../src/Controls.cs;../../src/StartScreen.cs;../../src/FolderPicker.cs;../../src/Dialogs.cs" />
+    <Compile Include="../../src/UI/*.cs" Exclude="../../src/UI/Program.cs" />
+    <Compile Include="../UiShot.cs" />
+  </ItemGroup>
+  <ItemGroup>
+    <EmbeddedResource Include="../../assets/paranoidal-logo.gif" LogicalName="Paranoidal.paranoidal-logo.gif" />
+    <EmbeddedResource Include="../../assets/space-age-plate.png" LogicalName="Paranoidal.space-age-plate.png" />
+    <EmbeddedResource Include="../../assets/gear.png" LogicalName="Paranoidal.gear.png" />
+    <EmbeddedResource Include="../../assets/app.ico" LogicalName="Paranoidal.app.ico" />
+  </ItemGroup>
+</Project>

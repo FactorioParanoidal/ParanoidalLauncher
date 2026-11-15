@@ -1,0 +1,57 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!--
+    Paranoidal Launcher: .NET 10 + Avalonia. The engine is src/*.cs (also built into tools/Harness), the window is src/UI.
+    The version is set only in src/AppInfo.cs (AppInfo.Version); the assembly attributes in src/UI/Program.cs take it from
+    there, and the apphost of the single-file exe gets the same version resource (self-update checks ProductVersion).
+    Release build for Windows: build.ps1 (dotnet publish -r win-x64, single file, self-contained, MinGit embedded).
+  -->
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <AssemblyName>ParanoidalLauncher</AssemblyName>
+    <RootNamespace>Paranoidal</RootNamespace>
+    <LangVersion>latest</LangVersion>
+    <Nullable>disable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <GenerateAssemblyInfo>false</GenerateAssemblyInfo>
+    <Deterministic>true</Deterministic>
+    <PathMap>$(MSBuildThisFileDirectory)=/src/</PathMap>
+    <DebugType>none</DebugType>
+    <ApplicationManifest>../app.manifest</ApplicationManifest>
+    <ApplicationIcon>../assets/app.ico</ApplicationIcon>
+    <BuiltInComInteropSupport>true</BuiltInComInteropSupport>
+    <AvaloniaUseCompiledBindingsByDefault>true</AvaloniaUseCompiledBindingsByDefault>
+    <!-- HttpWebRequest (SYSLIB0014) stays until the engine moves to HttpClient -->
+    <NoWarn>$(NoWarn);SYSLIB0014</NoWarn>
+    <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(RuntimeIdentifier)' != ''">
+    <SelfContained>true</SelfContained>
+    <PublishSingleFile>true</PublishSingleFile>
+    <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
+    <EnableCompressionInSingleFile>true</EnableCompressionInSingleFile>
+    <InvariantGlobalization>false</InvariantGlobalization>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Avalonia" Version="12.1.6" />
+    <PackageReference Include="Avalonia.Desktop" Version="12.1.6" />
+    <PackageReference Include="Avalonia.Themes.Simple" Version="12.1.6" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- the WinForms front end of 1.5.0, replaced file by file by src/UI -->
+    <Compile Remove="Program.cs;MainForm.cs;Ui.cs;Controls.cs;StartScreen.cs;FolderPicker.cs;Dialogs.cs" />
+    <Compile Remove="bin/**;obj/**" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <EmbeddedResource Include="../assets/paranoidal-logo.gif" LogicalName="Paranoidal.paranoidal-logo.gif" />
+    <EmbeddedResource Include="../assets/space-age-plate.png" LogicalName="Paranoidal.space-age-plate.png" />
+    <EmbeddedResource Include="../assets/gear.png" LogicalName="Paranoidal.gear.png" />
+    <EmbeddedResource Include="../assets/app.ico" LogicalName="Paranoidal.app.ico" />
+    <!-- MinGit only in the Windows exe: elsewhere the system git is used (GitBootstrap) -->
+    <EmbeddedResource Include="../vendor/MinGit-2.56.0.2-64-bit.zip" LogicalName="Paranoidal.mingit.zip" Condition="$(RuntimeIdentifier.StartsWith('win'))" />
+  </ItemGroup>
+</Project>
