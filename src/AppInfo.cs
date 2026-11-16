@@ -1,6 +1,5 @@
 using System;
 using System.Collections.Generic;
-using System.Drawing;
 using System.Globalization;
 using System.IO;
 using System.Reflection;
@@ -17,7 +16,7 @@ namespace Paranoidal
         /// Every change of the launcher bumps it and gets a section in CHANGELOG.md; build.ps1 refuses to build
         /// a different exe under an already built version (README.md, «Версии»).
         /// </summary>
-        public const string Version = "1.5.0";
+        public const string Version = "1.6.1";
         public const string AssemblyVersion = Version + ".0";
         public const string Owner = "FactorioParanoidal";
         public const string RepoName = "ParanoidalModpack";
@@ -321,38 +320,15 @@ namespace Paranoidal
         public static string Date(DateTime d) => d.ToString("dd.MM.yyyy HH:mm", CultureInfo.InvariantCulture);
     }
 
-    static class Res
+    /// <summary>Resources embedded in the exe (images of the window: Res in the UI part).</summary>
+    static partial class Res
     {
-        static Stream Open(string name) => Assembly.GetExecutingAssembly().GetManifestResourceStream("Paranoidal." + name);
+        internal static Stream Open(string name) => Assembly.GetExecutingAssembly().GetManifestResourceStream("Paranoidal." + name);
 
-        static Image gear, plate;
-        public static Image Gear { get { return gear ?? (gear = Load("gear.png")); } }
-        /// <summary>The "SPACE AGE" plate of the game's Factorio Space Age logo (under the animated logo of Space Age).</summary>
-        public static Image SpaceAgePlate { get { return plate ?? (plate = Load("space-age-plate.png")); } }
-
-        /// <summary>The animated PARANOIDAL logo (GIF; LogoArt keeps it open: GDI+ reads the frames from the stream).</summary>
+        /// <summary>The animated PARANOIDAL logo (GIF).</summary>
         public static Stream LogoGif() => Open("paranoidal-logo.gif");
 
-        static Image Load(string name)
-        {
-            using (var s = Open(name))
-            {
-                if (s == null) return null;
-                using (var tmp = Image.FromStream(s)) return new Bitmap(tmp);
-            }
-        }
-
-        public static Icon AppIcon(int size)
-        {
-            try
-            {
-                using (var s = Open("app.ico"))
-                    if (s != null) return new Icon(s, size, size);
-            }
-            catch { }
-            return null;
-        }
-
+        /// <summary>The MinGit zip (Windows builds only; null elsewhere).</summary>
         public static Stream MinGitZip() => Open("mingit.zip");
     }
 }

@@ -1,5 +1,10 @@
 /obj/
+/src/obj/
 /dist/
 /test-runs/
 ParanoidalLauncher-data/
 *.user
+/tools/Harness/bin/
+/tools/Harness/obj/
+/tools/UiShot/obj/
+bin/

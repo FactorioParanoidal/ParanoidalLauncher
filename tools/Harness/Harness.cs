@@ -84,7 +84,6 @@ namespace Paranoidal
         static int Main(string[] argv)
         {
             Console.OutputEncoding = Encoding.UTF8;
-            System.Net.ServicePointManager.SecurityProtocol |= System.Net.SecurityProtocolType.Tls12;
             var lineOpt = Opt(argv, "--line");
             if (lineOpt != null) Lines.Set(Lines.ById(lineOpt) ?? Lines.Current);
             argv = argv.Where(x => !x.StartsWith("--line=")).ToArray();

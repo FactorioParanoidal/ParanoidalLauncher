@@ -6,9 +6,9 @@ using System.Linq;
 using System.Net;
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.Json;
 using System.Text.RegularExpressions;
 using System.Threading.Tasks;
-using System.Web.Script.Serialization;
 
 namespace Paranoidal
 {
@@ -126,39 +126,47 @@ namespace Paranoidal
             return ParseManifest(text, repo, product, file);
         }
 
+        /// <summary>release.json as written by tools/release-manifest.ps1 (README «Где лаунчер ищет обновления»).</summary>
+        sealed class ManifestJson
+        {
+            public int? Schema { get; set; }
+            public string Product { get; set; }
+            public string Version { get; set; }
+            public string Date { get; set; }
+            public string File { get; set; }
+            public long Size { get; set; }
+            public string Sha256 { get; set; }
+            public List<ManifestChange> Changes { get; set; }
+        }
+
+        sealed class ManifestChange { public string Version { get; set; } public string Date { get; set; } public string Text { get; set; } }
+
+        // camelCase names; numbers may come as strings
+        static readonly JsonSerializerOptions JsonOptions = new JsonSerializerOptions(JsonSerializerDefaults.Web);
+
         public static ReleaseInfo ParseManifest(string text, string repo, string product, string file)
         {
-            var d = new JavaScriptSerializer().DeserializeObject(text) as IDictionary<string, object>;
+            ManifestJson d;
+            try { d = JsonSerializer.Deserialize<ManifestJson>(text ?? "", JsonOptions); }
+            catch (JsonException ex) { throw new Exception(repo + "/" + Manifest + ": не JSON (" + ex.Message + ")"); }
             if (d == null) throw new Exception(repo + "/" + Manifest + ": не JSON");
-            Func<string, string> S = k => { object o; return d.TryGetValue(k, out o) && o != null ? Convert.ToString(o, System.Globalization.CultureInfo.InvariantCulture) : null; };
             var info = new ReleaseInfo
             {
                 Repo = repo,
-                Product = S("product"),
-                Version = S("version"),
-                Date = S("date") ?? "",
-                File = S("file"),
-                Sha256 = (S("sha256") ?? "").ToLowerInvariant(),
+                Product = d.Product,
+                Version = d.Version,
+                Date = d.Date ?? "",
+                File = d.File,
+                Sha256 = (d.Sha256 ?? "").ToLowerInvariant(),
+                Size = d.Size,
             };
-            long size;
-            long.TryParse(S("size"), out size);
-            info.Size = size;
-            if (S("schema") != "1") throw new Exception(repo + "/" + Manifest + ": неизвестный формат schema=" + S("schema"));
+            if (d.Schema != 1) throw new Exception(repo + "/" + Manifest + ": неизвестный формат schema=" + d.Schema);
             if (info.Product != product || info.File != file) throw new Exception(repo + "/" + Manifest + ": описан другой файл (" + info.Product + ", " + info.File + ")");
             if (!IsVersion(info.Version)) throw new Exception(repo + "/" + Manifest + ": неверная версия «" + info.Version + "»");
             if (!Regex.IsMatch(info.Sha256, "^[0-9a-f]{64}$") || info.Size <= 0) throw new Exception(repo + "/" + Manifest + ": нет размера или SHA-256 файла");
-            object ch;
-            if (d.TryGetValue("changes", out ch) && ch is IEnumerable)
-                foreach (var o in (IEnumerable)ch)
-                {
-                    var c = o as IDictionary<string, object>;
-                    if (c == null) continue;
-                    object v, dt, t;
-                    c.TryGetValue("version", out v);
-                    c.TryGetValue("date", out dt);
-                    c.TryGetValue("text", out t);
-                    if (IsVersion(v as string)) info.Changes.Add(new ReleaseChange { Version = (string)v, Date = dt as string ?? "", Text = t as string ?? "" });
-                }
+            if (d.Changes != null)
+                foreach (var c in d.Changes)
+                    if (c != null && IsVersion(c.Version)) info.Changes.Add(new ReleaseChange { Version = c.Version, Date = c.Date ?? "", Text = c.Text ?? "" });
             return info;
         }
 

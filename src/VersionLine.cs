@@ -8,7 +8,6 @@ using System.Linq;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.RegularExpressions;
-using System.Web.Script.Serialization;
 
 namespace Paranoidal
 {
@@ -154,19 +153,12 @@ namespace Paranoidal
         {
             try
             {
-                var path = Path.Combine(modsDir, "mod-list.json");
-                if (!File.Exists(path)) return null;
-                var root = new JavaScriptSerializer { MaxJsonLength = int.MaxValue }.DeserializeObject(File.ReadAllText(path, Encoding.UTF8)) as IDictionary<string, object>;
-                object arr;
-                if (root == null || !root.TryGetValue("mods", out arr) || !(arr is IEnumerable)) return null;
+                if (!File.Exists(Path.Combine(modsDir, "mod-list.json"))) return null;
+                var list = ModList.Read(modsDir);
+                if (list == null || list.Mods == null) return null;
                 var res = new Dictionary<string, bool>(StringComparer.OrdinalIgnoreCase);
-                foreach (var o in (IEnumerable)arr)
-                {
-                    var d = o as IDictionary<string, object>;
-                    object n, en;
-                    if (d == null || !d.TryGetValue("name", out n) || !(n is string)) continue;
-                    res[(string)n] = d.TryGetValue("enabled", out en) && en is bool && (bool)en;
-                }
+                foreach (var m in list.Mods)
+                    if (m != null && m.Name != null) res[m.Name] = m.Enabled;
                 return res;
             }
             catch { return null; }

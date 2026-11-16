@@ -46,12 +46,8 @@ namespace Paranoidal
 
         internal static void KillTree(Process p)
         {
-            try
-            {
-                using (var k = Process.Start(new ProcessStartInfo("taskkill", "/PID " + p.Id + " /T /F")
-                { CreateNoWindow = true, UseShellExecute = false }))
-                    k.WaitForExit(5000);
-            }
+            // git.exe starts git-remote-https and its helpers: the whole tree goes
+            try { p.Kill(entireProcessTree: true); p.WaitForExit(5000); }
             catch { }
         }
     }
@@ -237,11 +233,12 @@ namespace Paranoidal
         }
     }
 
-    /// <summary>Extracts the embedded MinGit once into AppInfo.DataDir.</summary>
+    /// <summary>Extracts the embedded MinGit once into AppInfo.DataDir (Windows); elsewhere the system git.</summary>
     static class GitBootstrap
     {
         public static string Ensure(Action<string, string> stage)
         {
+            if (!OperatingSystem.IsWindows()) return SystemGit();
             var dir = Path.Combine(AppInfo.DataDir, "mingit-" + AppInfo.MinGitVersion);
             var exe = Path.Combine(dir, "cmd", "git.exe");
             var marker = Path.Combine(dir, ".extracted");
@@ -260,6 +257,23 @@ namespace Paranoidal
             if (Directory.Exists(dir)) FsUtil.DeleteDir(dir);
             Directory.Move(tmp, dir);
             return exe;
+        }
+
+        /// <summary>git from PATH (Linux, macOS): MinGit is a Windows build.</summary>
+        static string SystemGit()
+        {
+            foreach (var d in (Environment.GetEnvironmentVariable("PATH") ?? "").Split(Path.PathSeparator))
+            {
+                if (d.Length == 0) continue;
+                try
+                {
+                    var exe = Path.Combine(d, "git");
+                    if (File.Exists(exe)) return exe;
+                }
+                catch { }
+            }
+            throw new SyncException("Не найден git. Установите пакет git из репозитория вашей системы и запустите лаунчер снова.",
+                "git was not found. Install the git package of your system and start the launcher again.");
         }
     }
 }
