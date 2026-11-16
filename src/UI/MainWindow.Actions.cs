@@ -53,7 +53,11 @@ namespace Paranoidal
                 return false;
             }
             if (Relocation.SameDir(target.Dir, AppInfo.ExeDir)) return false;
-            return await RelocateTo(target);
+            SetBusy(true);
+            cancelable = false;
+            btnCancel.IsEnabled = false;
+            try { return await RelocateTo(target); }
+            finally { if (!restarting) SetBusy(false); }
         }
 
         /// <summary>Tests: the answer to «several installations» (PARANOIDAL_LAUNCHER_TEST_CHOOSE).</summary>
@@ -607,11 +611,19 @@ namespace Paranoidal
         {
             if (engine == null || modsDir == null) return null;
             if (installed == null && (found == null || !found.Present || found.Fingerprint == null)) return null;
-            List<string> foreign = null;
-            var mods = modsDir;
-            // git reads the build's folder list off the UI thread
-            try { foreign = installed != null ? await Task.Run(() => engine.ForeignEntriesAsync(new SyncPaths(mods))) : null; } catch { }
-            return VersionLine.Build(installed, installedDate, mods, foreign, modified, found != null ? found.Fingerprint : null, en);
+            if (busy) return null;
+            SetBusy(true);
+            cancelable = false;
+            btnCancel.IsEnabled = false;
+            try
+            {
+                List<string> foreign = null;
+                var mods = modsDir;
+                // Keep the build and the shared git runner unchanged until the line is complete.
+                try { foreign = installed != null ? await Task.Run(() => engine.ForeignEntriesAsync(new SyncPaths(mods))) : null; } catch { }
+                return VersionLine.Build(installed, installedDate, mods, foreign, modified, found != null ? found.Fingerprint : null, en);
+            }
+            finally { SetBusy(false); }
         }
 
         async Task CopyCommit()
@@ -877,8 +889,8 @@ namespace Paranoidal
                 if (!busy) { closeConfirmed = true; Close(); return; }
                 if (!cancelable)
                 {
-                    await DarkDialog.Info(this, Tr.T("Подождите", "Please wait"), Tr.T("Идёт раскладка файлов в папке mods. Закройте программу, когда она закончит.",
-                        "Files are being written into the mods folder. Close the launcher when it finishes."), Gui.Orange);
+                    await DarkDialog.Info(this, Tr.T("Подождите", "Please wait"), Tr.T("Дождитесь завершения текущей операции, затем закройте программу.",
+                        "Wait for the current operation to finish, then close the launcher."), Gui.Orange);
                     return;
                 }
                 var r = await DarkDialog.Ask(this, Tr.T("Идёт обновление", "An update is running"), Tr.T("Прервать обновление и закрыть программу?", "Stop the update and close the launcher?"),
