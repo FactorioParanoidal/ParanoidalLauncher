@@ -3,6 +3,8 @@ using System.Diagnostics;
 using System.IO;
 using System.Text;
 using System.Text.RegularExpressions;
+using System.Threading;
+using System.Threading.Tasks;
 
 namespace Paranoidal
 {
@@ -46,10 +48,10 @@ namespace Paranoidal
         public static bool NeedsUpdate(ReleaseInfo r, string localVersion) => r != null && Releases.Compare(r.Version, localVersion) > 0;
 
         /// <summary>Downloads and checks the guide of the release; returns the path of the new copy.</summary>
-        public static string Install(ReleaseInfo r, Action<long, long> progress)
+        public static async Task<string> InstallAsync(ReleaseInfo r, Action<long, long> progress, CancellationToken ct = default)
         {
             var target = Target;
-            Releases.Download(r, target, progress);
+            await Releases.DownloadAsync(r, target, progress, ct).ConfigureAwait(false);
             var v = Version(target);
             if (v != r.Version) throw new Exception(AppInfo.GuideFile + ": в скачанном файле версия " + (v ?? "?") + ", ожидалась " + r.Version);
             // an older copy in the other place would only confuse

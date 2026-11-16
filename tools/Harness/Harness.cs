@@ -39,6 +39,7 @@ using System.IO.Compression;
 using System.Linq;
 using System.Text;
 using System.Threading;
+using System.Threading.Tasks;
 
 namespace Paranoidal
 {
@@ -60,16 +61,16 @@ namespace Paranoidal
             }
         }
         public void CanCancel(bool v) { Console.WriteLine("   cancel=" + v); }
-        public bool ConfirmExtras(List<string> names)
+        public Task<bool> ConfirmExtras(List<string> names)
         {
             Console.WriteLine("?? extras=" + names.Count + ": " + string.Join(", ", names));
-            return Answer == "yes";
+            return Task.FromResult(Answer == "yes");
         }
-        public bool ConfirmOverwrite(int files, List<string> sample, BuildFound found)
+        public Task<bool> ConfirmOverwrite(int files, List<string> sample, BuildFound found)
         {
             Console.WriteLine("?? overwrite files=" + files + " found=" + (found == null ? "-" : found.Present + "/" + found.FactorioVersion + "/" + found.ZzzVersion) +
                 " sample: " + string.Join(", ", sample.Take(5)));
-            return Answer == "yes";
+            return Task.FromResult(Answer == "yes");
         }
     }
 
@@ -81,7 +82,7 @@ namespace Paranoidal
             return a == null ? null : a.Substring(name.Length + 1);
         }
 
-        static int Main(string[] argv)
+        static async Task<int> Main(string[] argv)
         {
             Console.OutputEncoding = Encoding.UTF8;
             var lineOpt = Opt(argv, "--line");
@@ -124,7 +125,7 @@ namespace Paranoidal
                 if (argv.Contains("--prepare")) { prof.PrepareConfig(); Console.WriteLine("PREPARED " + prof.ConfigPath + "\n" + File.ReadAllText(prof.ConfigPath)); }
                 return 0;
             }
-            if (argv.Length > 0 && argv[0].StartsWith("--") && ReleaseCommands(argv, out int rc)) return rc;
+            if (argv.Length > 0 && argv[0].StartsWith("--")) { var rc = await ReleaseCommandsAsync(argv); if (rc != null) return rc.Value; }
             if (argv.Length > 0 && argv[0] == "--paths")
             {
                 // settings.ini paths: relative inside the exe folder, absolute outside, 1.0.x absolute values migrated
@@ -150,19 +151,24 @@ namespace Paranoidal
             {
                 var synced = paths.ReadSynced();
                 if (synced == null) { Console.WriteLine("LINE (not installed)"); return 0; }
-                var foreign = eng.ForeignEntries(paths);
+                var foreign = await eng.ForeignEntriesAsync(paths);
                 Console.WriteLine("LINE " + VersionLine.Build(synced, null, paths.Mods, foreign));
                 Console.WriteLine("LINE-EN " + VersionLine.Build(synced, null, paths.Mods, foreign, 0, null, true));
                 return 0;
             }
             if (played) { eng.MarkPlayed(paths, paths.ReadSynced()); Console.WriteLine("PLAYED " + AppInfo.Short(paths.ReadSynced())); return 0; }
-            if (preparePlay) { eng.PrepareForPlay(paths); Console.WriteLine("PREPARED"); return 0; }
+            if (preparePlay) { await eng.PrepareForPlayAsync(paths); Console.WriteLine("PREPARED"); return 0; }
             var t0 = DateTime.Now;
+            // «Отмена» after the given seconds (the same git.Cancel the window's button calls)
+            int cancelAfter;
+            using var cancelTimer = a.Length > 4 && int.TryParse(a[4], out cancelAfter)
+                ? new Timer(_ => { Console.WriteLine("== CANCEL after " + cancelAfter + " s"); git.Cancel(); }, null, cancelAfter * 1000, Timeout.Infinite)
+                : null;
             try
             {
                 if (status)
                 {
-                    var st = eng.CheckStatus(a[1]);
+                    var st = await eng.CheckStatusAsync(a[1]);
                     Console.WriteLine("STATUS installed=" + AppInfo.Short(st.Installed) + " date=" + st.InstalledDate + " remote=" + AppInfo.Short(st.Remote) +
                         " offline=" + st.Offline + " modified=" + st.Modified + " adopted=" + st.Adopted + " from=" + AppInfo.Short(st.AdoptedFrom) +
                         " rollback=" + AppInfo.Short(st.RollbackTarget) + " (" + st.RollbackDate + ", newer=" + st.RollbackIsNewer + ")" +
@@ -177,7 +183,7 @@ namespace Paranoidal
                     Console.WriteLine("TIME " + (int)(DateTime.Now - t0).TotalSeconds + "s");
                     return 0;
                 }
-                var r = rollback ? eng.Rollback(paths) : eng.Update(paths, verify, a.Length > 3 && a[3] != "-" ? a[3] : null);
+                var r = rollback ? await eng.RollbackAsync(paths) : await eng.UpdateAsync(paths, verify, a.Length > 3 && a[3] != "-" ? a[3] : null);
                 Console.WriteLine("RESULT old=" + AppInfo.Short(r.Old) + " new=" + AppInfo.Short(r.New) + " upToDate=" + r.UpToDate +
                     " fullCheck=" + r.FullCheck + " declined=" + r.Declined + " downloaded=" + r.Downloaded + " notRestored=" + r.NotRestored);
                 foreach (var m in r.Mods) Console.WriteLine("   mod " + m.Mod + " | " + m.Kind + " | " + m.Files);
@@ -197,9 +203,10 @@ namespace Paranoidal
                 " changes=" + r.Changes.Count + " newer-than-mine=" + string.Join(",", r.Since(AppInfo.Version).Select(c => c.Version)) + " url=" + r.FileUrl);
         }
 
-        static bool ReleaseCommands(string[] a, out int code)
+        /// <summary>The exit code of a release/relocation command; null: not one of them.</summary>
+        static async Task<int?> ReleaseCommandsAsync(string[] a)
         {
-            code = 0;
+            int code = 0;
             try
             {
                 switch (a[0])
@@ -207,64 +214,64 @@ namespace Paranoidal
                     case "--releases":
                         {
                             var t0 = DateTime.Now;
-                            var rc = Releases.CheckAll();
+                            var rc = await Releases.CheckAllAsync();
                             PrintRelease("LAUNCHER", rc.Launcher, rc.LauncherError);
                             PrintRelease("GUIDE", rc.Guide, rc.GuideError);
                             Console.WriteLine("TIME " + (int)(DateTime.Now - t0).TotalMilliseconds + "ms");
-                            return true;
+                            return code;
                         }
                     case "--guide":
                         {
-                            var r = Releases.Latest(AppInfo.GuideRepo, "guide", AppInfo.GuideFile);
+                            var r = await Releases.LatestAsync(AppInfo.GuideRepo, "guide", AppInfo.GuideFile);
                             var local = GuideFile.Local();
                             var lv = local == null ? null : GuideFile.Version(local);
                             Console.WriteLine("LOCAL " + (local ?? "(none)") + " version=" + lv + " needsUpdate=" + GuideFile.NeedsUpdate(r, lv));
                             if (GuideFile.NeedsUpdate(r, lv))
                             {
                                 long last = -1;
-                                var path = GuideFile.Install(r, (d, t) => { long pct = t > 0 ? d * 100 / t : -1; if (pct / 25 != last / 25) { last = pct; Console.WriteLine("   " + pct + "%"); } });
+                                var path = await GuideFile.InstallAsync(r, (d, t) => { long pct = t > 0 ? d * 100 / t : -1; if (pct / 25 != last / 25) { last = pct; Console.WriteLine("   " + pct + "%"); } });
                                 Console.WriteLine("INSTALLED " + path + " version=" + GuideFile.Version(path));
                             }
                             Console.WriteLine("LOCAL-AFTER " + GuideFile.Local() + " version=" + GuideFile.Version(GuideFile.Local()));
-                            return true;
+                            return code;
                         }
                     case "--download-launcher":
                         {
-                            var r = Releases.Latest(AppInfo.LauncherRepo, "launcher", AppInfo.ExeName);
+                            var r = await Releases.LatestAsync(AppInfo.LauncherRepo, "launcher", AppInfo.ExeName);
                             PrintRelease("LAUNCHER", r, null);
-                            Releases.Download(r, a[1], null);
+                            await Releases.DownloadAsync(r, a[1], null);
                             Console.WriteLine("DOWNLOADED " + a[1] + " exe-version=" + SelfUpdate.ExeVersion(a[1]));
-                            return true;
+                            return code;
                         }
                     case "--swap":
                         SelfUpdate.Swap(a[1], a[2]);
                         Console.WriteLine("SWAPPED exe-version=" + SelfUpdate.ExeVersion(a[2]) + " old=" + File.Exists(a[2] + SelfUpdate.OldSuffix));
-                        SelfUpdate.CleanupOld(a[2]);
+                        await SelfUpdate.CleanupOldAsync(a[2]);
                         Console.WriteLine("CLEANUP old-left=" + File.Exists(a[2] + SelfUpdate.OldSuffix));
-                        return true;
+                        return code;
                     case "--relocate":
                         {
                             var log = new List<string>();
                             var exe = Relocation.MoveTo(a[1], a[2], a[3], log);
                             foreach (var l in log) Console.WriteLine("   " + l);
                             Console.WriteLine("MOVED start=" + exe + " version=" + SelfUpdate.ExeVersion(exe));
-                            return true;
+                            return code;
                         }
                     case "--cleanup-old":
-                        foreach (var f in Relocation.CleanupOldPlace(a[1], a[2], a[3])) Console.WriteLine("REMOVED " + f);
+                        foreach (var f in await Relocation.CleanupOldPlaceAsync(a[1], a[2], a[3])) Console.WriteLine("REMOVED " + f);
                         Console.WriteLine("CLEANUP done");
-                        return true;
+                        return code;
                     case "--shortcuts":
-                        if (string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("PARANOIDAL_LAUNCHER_TEST_SHORTCUTS"))) { Console.WriteLine("set PARANOIDAL_LAUNCHER_TEST_SHORTCUTS"); code = 1; return true; }
+                        if (string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("PARANOIDAL_LAUNCHER_TEST_SHORTCUTS"))) { Console.WriteLine("set PARANOIDAL_LAUNCHER_TEST_SHORTCUTS"); return 1; }
                         foreach (var l in Shortcuts.All(a[1], a.Length > 2 ? a[2] : null)) Console.WriteLine("LINK " + l + " -> " + Shortcuts.TargetOf(l));
-                        return true;
+                        return code;
                     case "--detect-all":
                         foreach (var f in FactorioInfo.DetectAll(a.Length > 1 ? a[1] : null)) Console.WriteLine("FACTORIO " + f.Dir + " | " + f.Describe(false) + " ok=" + f.Ok);
-                        return true;
+                        return code;
                 }
             }
-            catch (Exception ex) { Console.WriteLine("ERROR " + ex.Message); code = 1; return true; }
-            return false;
+            catch (Exception ex) { Console.WriteLine("ERROR " + ex.Message); return 1; }
+            return null;
         }
 
         // ------------------------------------------------------------------ load diagnostics

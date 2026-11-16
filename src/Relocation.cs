@@ -5,6 +5,7 @@ using System.Linq;
 using System.Runtime.InteropServices;
 using System.Runtime.InteropServices.ComTypes;
 using System.Text;
+using System.Threading.Tasks;
 
 namespace Paranoidal
 {
@@ -173,7 +174,7 @@ namespace Paranoidal
         /// Run by the new copy after a move: deletes the old exe, its data folder and its guide copy. Only these, and the
         /// data folder only when no other launcher exe is left there. Returns what was removed (Russian, for the journal).
         /// </summary>
-        public static List<string> CleanupOldPlace(string oldExe, string currentExe, string currentDataDir)
+        public static async Task<List<string>> CleanupOldPlaceAsync(string oldExe, string currentExe, string currentDataDir)
         {
             var done = new List<string>();
             if (string.IsNullOrEmpty(oldExe)) return done;
@@ -184,7 +185,7 @@ namespace Paranoidal
             for (int i = 0; i < 10 && File.Exists(oldExe); i++)
             {
                 try { File.SetAttributes(oldExe, FileAttributes.Normal); File.Delete(oldExe); done.Add(oldExe); }
-                catch { System.Threading.Thread.Sleep(300); }
+                catch { await Task.Delay(300); }
             }
             var guide = Path.Combine(dir, AppInfo.GuideFile);
             if (File.Exists(guide) && !SameDir(dir, Path.GetDirectoryName(currentExe)))

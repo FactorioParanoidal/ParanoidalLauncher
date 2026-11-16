@@ -4,6 +4,7 @@ using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Text;
+using System.Threading;
 using System.Threading.Tasks;
 using Avalonia;
 using Avalonia.Controls;
@@ -888,19 +889,23 @@ namespace Paranoidal
         public void CanCancel(bool value) => Ui(() => { cancelable = value; btnCancel.IsEnabled = value && busy; });
 
         /// <summary>
-        /// A question of the engine: it comes from the worker thread of the operation, which waits for the answer while the
-        /// UI thread shows the dialog (the UI thread itself never waits here).
+        /// A question of the engine: the dialog runs on the UI thread, the engine awaits the answer. The answer resumes the
+        /// engine on the thread pool, never inline on the UI thread (the engine's file work must not freeze the window).
         /// </summary>
-        static bool AskFromWorker(Func<Task<bool>> ask)
+        static Task<bool> AskOnUi(Func<Task<bool>> ask)
         {
-            if (Dispatcher.UIThread.CheckAccess()) throw new InvalidOperationException("engine questions come from a worker thread");
-            Task<bool> answer = Dispatcher.UIThread.InvokeAsync(ask);
-            return answer.GetAwaiter().GetResult();
+            var answer = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            Dispatcher.UIThread.Post(async () =>
+            {
+                try { answer.SetResult(await ask()); }
+                catch (Exception ex) { answer.SetException(ex); }
+            });
+            return answer.Task;
         }
 
-        public bool ConfirmExtras(List<string> names)
+        public Task<bool> ConfirmExtras(List<string> names)
         {
-            return AskFromWorker(async () =>
+            return AskOnUi(async () =>
             {
                 var details = names.Take(400).ToList();
                 if (names.Count > 400) details.Add(Tr.T("… и ещё ", "… and ") + Fmt.Num(names.Count - 400) + Tr.T("", " more"));
@@ -915,9 +920,9 @@ namespace Paranoidal
             });
         }
 
-        public bool ConfirmOverwrite(int files, List<string> sample, BuildFound f)
+        public Task<bool> ConfirmOverwrite(int files, List<string> sample, BuildFound f)
         {
-            return AskFromWorker(async () =>
+            return AskOnUi(async () =>
             {
                 if (seeding != null)
                 {
@@ -953,15 +958,24 @@ namespace Paranoidal
 
         // ------------------------------------------------------------------ operations
 
-        void RunOp<T>(Func<T> work, Action<T> done) => RunOp(work, r => { done(r); return Task.CompletedTask; });
+        /// <summary>An operation whose work has no awaits (file copies, a zip, the game search): it runs on the thread pool too.</summary>
+        void RunOpSync<T>(Func<T> work, Action<T> done) => RunOp(() => Task.FromResult(work()), r => { done(r); return Task.CompletedTask; });
+        void RunOpSync<T>(Func<T> work, Func<T, Task> done) => RunOp(() => Task.FromResult(work()), done);
+        void RunOp<T>(Func<Task<T>> work, Action<T> done) => RunOp(work, r => { done(r); return Task.CompletedTask; });
+
+        /// <summary>The token of the running operation: «Отмена» and closing the window cancel it (downloads of releases).</summary>
+        CancellationToken OpToken => opCancel.Token;
+        CancellationTokenSource opCancel = new CancellationTokenSource();
 
         /// <summary>
-        /// An operation: `work` on the thread pool (the window is busy meanwhile), then `done` on the UI thread; `done` may
-        /// ask (a dialog) and the operation ends with its answer. An error is shown in the window and in a dialog.
+        /// An operation: `work` on the thread pool (the window is busy meanwhile; the engine's awaits continue there), then
+        /// `done` on the UI thread; `done` may ask (a dialog) and the operation ends with its answer. An error is shown in
+        /// the window and in a dialog.
         /// </summary>
-        async void RunOp<T>(Func<T> work, Func<T, Task> done)
+        async void RunOp<T>(Func<Task<T>> work, Func<T, Task> done)
         {
             SetBusy(true);
+            if (opCancel.IsCancellationRequested) { opCancel.Dispose(); opCancel = new CancellationTokenSource(); }
             T result = default(T);
             Exception error = null;
             try { result = await Task.Run(work); }

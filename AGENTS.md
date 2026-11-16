@@ -35,7 +35,8 @@ these documents are in English; texts players see are RU/EN; `README.md` and `CH
 | `src/Lines.cs` | builds 2.1 / 2.1-sa: branch, game (`Game`, `MinGame`, `Fits`), DLC and their `mod-list.json` states; `Lines.Current`, `Lines.Key` (per-build setting keys) |
 | `src/Profile.cs` | `GameProfile`: config.ini and write-data of the line's game (Space Age: own folder, `--config`), the first switch to Space Age (plan, copies, base from the 2.1 build) |
 | `src/Sync.cs` | `SyncEngine`: status, update, «Проверить файлы», parallel blob download, extra mods, start preparation |
-| `src/Git.cs` | runs git (bundled MinGit on Windows, system git elsewhere) with an isolated environment, kill handle for the download watchdog |
+| `src/Git.cs` | runs git asynchronously (`RunAsync`; bundled MinGit on Windows, system git elsewhere) with an isolated environment, kill handle for the download watchdog, the operation's cancel token |
+| `src/Http.cs` | the one `HttpClient` (anonymous GET, gzip, system proxy) with per-request time limits; `HttpFailure` |
 | `src/GitHubApi.cs` | anonymous read-only REST: change list, file sizes for batching, short commit id → full; offline cache; `RemoteBuild` (zzzparanoidal of a branch/commit from raw.githubusercontent.com) |
 | `src/Recognize.cs` | recognising a build already in `mods\` by content (no network needed) |
 | `src/Rollback.cs` | one step back/forward without internet (difference only) |
@@ -289,6 +290,10 @@ Done:
   version 1.6.0 with its CHANGELOG section;
 - checked on Linux: builds, `SELFTEST OK`, UiShot RU/EN, a live run on a fake game stand (start window, tabs, GitHub
   status check, closing); the win-x64 exe is cross-built with its version resource, manifest and MinGit.
+- async through the whole stack (branch `async-engine`, 1.6.2): git, HTTP, the engine (`SyncEngine.*Async`) and its
+  questions (`ISyncUi.Confirm*` return `Task<bool>`) are awaited, no thread waits for another; `RunOp` runs async work
+  on the thread pool, `RunOpSync` work without awaits (file copies, zip, game search). Only `Program.Main` before the
+  window (waiting for the previous process) still blocks.
 
 Before the merge:
 - [ ] Windows run by a tester: first start (MinGit unpack), install and update of both builds, game start, rollback,

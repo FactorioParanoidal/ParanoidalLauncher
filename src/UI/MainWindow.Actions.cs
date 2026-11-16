@@ -80,7 +80,8 @@ namespace Paranoidal
             string newExe = null, error = null;
             if (AppInfo.CanWrite(target.Dir))
             {
-                try { newExe = Relocation.MoveTo(exe, AppInfo.DataDir, target.Dir, log, otherGame); }
+                // the copy of the exe and the data folder runs off the UI thread; the log is read after it
+                try { newExe = await Task.Run(() => Relocation.MoveTo(exe, AppInfo.DataDir, target.Dir, log, otherGame)); }
                 catch (Exception ex) { error = ex.Message; }
             }
             else error = "в папку игры нельзя записывать без прав администратора";
@@ -107,7 +108,9 @@ namespace Paranoidal
                     return false;
                 }
                 string err2 = null;
-                if (!Relocation.TargetIsSameOrNewer(target.Dir) && !SelfUpdate.InstallElevated(exe, exe, target.Dir, out err2))
+                bool moved = Relocation.TargetIsSameOrNewer(target.Dir);
+                if (!moved) (moved, err2) = await SelfUpdate.InstallElevatedAsync(exe, exe, target.Dir);
+                if (!moved)
                 {
                     AppendLog(err2 == null ? "Права администратора не выданы, перенос отложен." : "Перенос не удался: " + err2, LogKind.Warn);
                     if (err2 != null) await DarkDialog.Info(this, Tr.T("Папка игры", "Game folder"), Tr.T("Перенос не удался: ", "The move failed: ") + err2, Gui.Red);
@@ -142,7 +145,7 @@ namespace Paranoidal
             if (err != null) { await DarkDialog.Info(this, Tr.T("Папка модов", "Mods folder"), err, Gui.Red); return; }
             if (FactorioInfo.IsRunning()) { await DarkDialog.Info(this, Tr.T("Factorio запущена", "Factorio is running"), Tr.T("Закройте игру и запустите проверку снова.", "Close the game and start the check again."), Gui.Orange); return; }
             var mods = modsDir;
-            RunOp(() => engine.Update(new SyncPaths(mods), true), res =>
+            RunOp(() => engine.UpdateAsync(new SyncPaths(mods), true), res =>
             {
                 installed = res.New;
                 progress.Value = 1;
@@ -230,19 +233,19 @@ namespace Paranoidal
             var guide = GuideUpdate ? guideRel : null;
             bool build = !(guide != null && target == null && installed != null && installed == remote && modified <= 0);
             var seed = target == null ? seeding : null;
-            RunOp(() =>
+            RunOp(async () =>
             {
                 var o = new UpdateOutcome();
                 if (build)
                 {
                     engine.Seeded = seed;
-                    try { o.Res = engine.Update(new SyncPaths(mods), false, target); }
+                    try { o.Res = await engine.UpdateAsync(new SyncPaths(mods), false, target); }
                     finally { engine.Seeded = null; }
                 }
                 if (guide != null && (o.Res == null || !o.Res.Declined))
                 {
                     Stage("Скачиваю гайд по сборке " + guide.Version + "…", "Downloading the modpack guide " + guide.Version + "…");
-                    try { InstallGuide(guide); o.Guide = guide.Version; }
+                    try { await InstallGuideAsync(guide); o.Guide = guide.Version; }
                     catch (Exception ex) { o.GuideError = ex.Message; }
                 }
                 return o;
@@ -313,7 +316,7 @@ namespace Paranoidal
             var stage = lblStage.Text;
             var detail = lblDetail.Text;
             var mods = modsDir;
-            RunOp(() => engine.CheckStatus(mods), st =>
+            RunOp(() => engine.CheckStatusAsync(mods), st =>
             {
                 ApplyStatus(st, true);
                 // the game the build needs now (a newer build may need a newer game)
@@ -357,7 +360,7 @@ namespace Paranoidal
             if (r != DialogResult.Yes) return;
             var mods = modsDir;
             bool back = !rollbackNewer;
-            RunOp(() => engine.Rollback(new SyncPaths(mods)), async res =>
+            RunOp(() => engine.RollbackAsync(new SyncPaths(mods)), async res =>
             {
                 installed = res.New;
                 installedDate = null;
@@ -402,20 +405,20 @@ namespace Paranoidal
                 return;
             }
             AppendLog("Версия хоста: " + line, LogKind.Info);
-            RunOp(() =>
+            RunOp(async () =>
             {
                 Stage("Ищу версию хоста на GitHub…", "Looking the host's version up on GitHub…");
                 Progress(null, "");
                 CommitInfo ci;
-                try { ci = GitHubApi.Commit(sha); }
+                try { ci = await GitHubApi.CommitAsync(sha); }
                 catch (Exception ex) { throw new SyncException("Версия " + sha + " не найдена на GitHub: " + ex.Message, "Version " + sha + " was not found on GitHub: " + ex.Message); }
                 // a bare commit id says nothing about the line: its zzzparanoidal tells the game, the branch tells 2.1 from
                 // Space Age (the Space Age branch contains the 2.1 history, so 2.1 is asked first)
-                var bi = ci == null ? null : RemoteBuild.Info(ci.Sha);
+                var bi = ci == null ? null : await RemoteBuild.InfoAsync(ci.Sha);
                 BuildLine bl = bi == null ? null : Lines.Of(bi.FactorioVersion);
                 if (bl != null && hostLine != null && bl.Game == hostLine.Game) bl = hostLine;
                 else if (bl == Lines.L21)
-                    bl = GitHubApi.InBranch(Lines.L21.Branch, ci.Sha) ? Lines.L21 : GitHubApi.InBranch(Lines.SA.Branch, ci.Sha) ? Lines.SA : null;
+                    bl = await GitHubApi.InBranchAsync(Lines.L21.Branch, ci.Sha) ? Lines.L21 : await GitHubApi.InBranchAsync(Lines.SA.Branch, ci.Sha) ? Lines.SA : null;
                 // a version of a build for another game (2.0): the launcher has no build for it
                 var game = bi != null && bl == null && bi.FactorioVersion != null && !Lines.L21.Matches(bi.FactorioVersion) ? Paranoidal.BuildLine.MajorMinor(bi.FactorioVersion) : null;
                 return Tuple.Create(ci, bl, game);
@@ -467,10 +470,10 @@ namespace Paranoidal
             var build = installed;
             bool cache = chkCache.Checked;
             var prof = GameProfile.Of(f, Lines.Current);
-            RunOp(() =>
+            RunOp(async () =>
             {
                 var p = new SyncPaths(mods);
-                engine.PrepareForPlay(p);
+                await engine.PrepareForPlayAsync(p);
                 engine.MarkPlayed(p, build);
                 // Factorio writes config.ini when it exits: change it only while the game is closed
                 if (FactorioInfo.IsRunning()) return true;
@@ -486,7 +489,7 @@ namespace Paranoidal
             }, _ => StartGame());
         }
 
-        /// <summary>Worker thread: logs what GameConfig did.</summary>
+        /// <summary>Inside an operation: logs what GameConfig did.</summary>
         void ReportCache(GameConfig.Result r, List<string> tilde)
         {
             if (r.Error != null)
@@ -540,7 +543,7 @@ namespace Paranoidal
         }
 
         /// <summary>Reads the game's last log (the game must be closed) and shows how the load went and why.</summary>
-        void AnalyzeLoad()
+        async void AnalyzeLoad()
         {
             var f = fac;
             var mods = modsDir;
@@ -548,7 +551,8 @@ namespace Paranoidal
             string prevBuild = Settings.Get(Lines.Key("launch-build-prev")), curBuild = Settings.Get(Lines.Key("launch-build"));
             var line = Lines.Current;
             var diagKey = Lines.Key("load-diag-key");
-            Task.Run(() =>
+            LoadVerdict v;
+            try { v = await Task.Run(() =>
             {
                 // the game of the line writes its log into its data folder (the Space Age profile has its own)
                 var prof = GameProfile.Of(f, line);
@@ -564,10 +568,10 @@ namespace Paranoidal
                     ModsDir = mods,
                 };
                 return LoadDiag.Analyze(cur, prev, ctx);
-            }).ContinueWith(t => Ui(() =>
+            }); }
+            catch { return; }   // no diagnostics this time; the next game exit tries again
+            if (closed || v == null || line != Lines.Current) return;
             {
-                if (t.IsFaulted || t.Result == null || line != Lines.Current) return;
-                var v = t.Result;
                 lastLoad = v;
                 ShowLoad();
                 if (v.Key != Settings.Get(diagKey))
@@ -577,7 +581,7 @@ namespace Paranoidal
                     bool good = v.Data == LoadLog.DataState.Hit && (v.Headless || v.Atlas == LoadLog.AtlasState.Hit);
                     AppendLog(v.Full(false), good ? LogKind.Ok : LogKind.Warn);
                 }
-            }));
+            }
         }
 
         void ShowLoad()
@@ -599,19 +603,21 @@ namespace Paranoidal
         // ------------------------------------------------------------------ version line and report
 
         /// <summary>The version line in the given language; null when there is nothing to describe.</summary>
-        string BuildLine(bool en)
+        async Task<string> BuildLineAsync(bool en)
         {
             if (engine == null || modsDir == null) return null;
             if (installed == null && (found == null || !found.Present || found.Fingerprint == null)) return null;
             List<string> foreign = null;
-            try { foreign = installed != null ? engine.ForeignEntries(new SyncPaths(modsDir)) : null; } catch { }
-            return VersionLine.Build(installed, installedDate, modsDir, foreign, modified, found != null ? found.Fingerprint : null, en);
+            var mods = modsDir;
+            // git reads the build's folder list off the UI thread
+            try { foreign = installed != null ? await Task.Run(() => engine.ForeignEntriesAsync(new SyncPaths(mods))) : null; } catch { }
+            return VersionLine.Build(installed, installedDate, mods, foreign, modified, found != null ? found.Fingerprint : null, en);
         }
 
         async Task CopyCommit()
         {
             string text, ru;
-            try { text = BuildLine(Tr.En); ru = Tr.En ? BuildLine(false) : text; }
+            try { text = await BuildLineAsync(Tr.En); ru = Tr.En ? await BuildLineAsync(false) : text; }
             catch (Exception ex) { lblDetail.Text = Tr.T("Не удалось собрать строку версии: ", "Could not build the version line: ") + ex.Message; return; }
             if (text == null) return;
             AppendLog(ru, LogKind.Info);
@@ -665,7 +671,7 @@ namespace Paranoidal
             if (inp == null) return;
             inp.Fac = fac;
             inp.ModsDir = modsDir;
-            try { inp.VersionLine = BuildLine(false); } catch (Exception ex) { inp.VersionLine = "не собрана: " + ex.Message; }
+            try { inp.VersionLine = await BuildLineAsync(false); } catch (Exception ex) { inp.VersionLine = "не собрана: " + ex.Message; }
             inp.State = StateText();
             inp.Journal = rtbLog.Text;
             inp.LoadDiag = lastLoad != null ? lastLoad.Full(false) : null;
@@ -674,15 +680,15 @@ namespace Paranoidal
                 "Paranoidal-report-" + DateTime.Now.ToString("yyyyMMdd-HHmmss") + ".zip");
             var mods = modsDir;
             bool haveBuild = installed != null;
-            RunOp(() =>
+            RunOp(async () =>
             {
                 Stage("Собираю отчёт о проблеме…", "Building the problem report…");
                 Progress(null, "");
                 if (mods != null && engine != null && haveBuild)
                 {
                     var p = new SyncPaths(mods);
-                    try { inp.ModifiedFiles = engine.ChangedBuildFiles(p); } catch { }
-                    try { var fe = engine.ForeignEntries(p); if (fe != null) inp.ForeignMods = VersionLine.Describe(mods, fe); } catch { }
+                    try { inp.ModifiedFiles = await engine.ChangedBuildFilesAsync(p); } catch { }
+                    try { var fe = await engine.ForeignEntriesAsync(p); if (fe != null) inp.ForeignMods = VersionLine.Describe(mods, fe); } catch { }
                 }
                 return Report.Create(inp);
             }, async res =>
@@ -788,7 +794,7 @@ namespace Paranoidal
             var f = fac;
             // tests: the launcher closes when the choice ends without a move (with one it closes after the status check)
             Action end = () => { if (Auto) CloseLater(); };
-            RunOp(() => GameProfile.PlanMove(from, dir, GameProfile.MainMods(f), f.Dir), async plan =>
+            RunOpSync(() => GameProfile.PlanMove(from, dir, GameProfile.MainMods(f), f.Dir), async plan =>
             {
                 if (plan.Same)
                 {
@@ -823,7 +829,7 @@ namespace Paranoidal
                 if (!await Dialogs.ConfirmProfileMove(this, plan)) { end(); return; }
                 autoCloseAfterUpdate = Auto;   // tests: a failed move closes the launcher too
                 AppendLog("Переношу профиль Space Age: " + plan.From + " → " + plan.To + " (" + Fmt.SizeRu(plan.Bytes) + (plan.SameVolume ? ", тот же диск" : ", другой диск") + ").", LogKind.Info);
-                RunOp(() =>
+                RunOpSync(() =>
                 {
                     CanCancel(false);
                     Stage("Переношу профиль Space Age…", "Moving the Space Age profile…");
@@ -849,7 +855,7 @@ namespace Paranoidal
             if (!busy || !cancelable) return;
             btnCancel.IsEnabled = false;
             lblStage.Text = Tr.T("Отменяю…", "Cancelling…");
-            Releases.Cancel = true;
+            opCancel.Cancel();
             if (git != null) Task.Run(() => git.Cancel());
         }
 
@@ -879,7 +885,8 @@ namespace Paranoidal
                     Tr.T("Файлы модов не изменятся, уже скачанное сохранится.", "The mod files do not change; what was downloaded is kept."),
                     null, Tr.T("Прервать и закрыть", "Stop and close"), Tr.T("Продолжить", "Continue"), Gui.Title, ButtonKind.Danger);
                 if (r != DialogResult.Yes) return;
-                if (git != null) git.Cancel();
+                opCancel.Cancel();
+                if (git != null) await Task.Run(() => git.Cancel());
                 closeConfirmed = true;
                 Close();
             });

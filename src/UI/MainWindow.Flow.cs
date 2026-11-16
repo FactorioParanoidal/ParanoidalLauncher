@@ -13,7 +13,8 @@ namespace Paranoidal
     {
         sealed class StartData { public FactorioInfo Fac, Saved; public bool FromSettings; public List<FactorioInfo> All; }
 
-        void Startup()
+        /// <summary>The window is shown: the journal's first lines, cleanup after an update or a move, then the game search.</summary>
+        async void Startup()
         {
             AppendLog(AppInfo.Name + " " + AppInfo.Version, LogKind.Muted);
             AppendLog("Данные лаунчера: " + AppInfo.DataDir, LogKind.Muted);
@@ -22,7 +23,7 @@ namespace Paranoidal
             if (AppInfo.TestOffline) AppendLog("Тестовый режим: связь с GitHub отключена (PARANOIDAL_LAUNCHER_TEST_OFFLINE=1).", LogKind.Warn);
             if (Releases.Base != "https://github.com") AppendLog("Тестовый режим: релизы лаунчера и гайда берутся с " + Releases.Base + ".", LogKind.Warn);
             var exePath = SelfUpdate.CurrentExe;
-            SelfUpdate.CleanupOld(exePath);
+            await SelfUpdate.CleanupOldAsync(exePath);
             if (StartArgs.UpdatedFrom != null)
             {
                 AppendLog("Лаунчер обновлён: " + StartArgs.UpdatedFrom + " → " + AppInfo.Version + ".", LogKind.Ok);
@@ -30,7 +31,7 @@ namespace Paranoidal
             }
             if (StartArgs.MovedFrom != null)
             {
-                var removed = Relocation.CleanupOldPlace(StartArgs.MovedFrom, exePath, AppInfo.DataDir);
+                var removed = await Relocation.CleanupOldPlaceAsync(StartArgs.MovedFrom, exePath, AppInfo.DataDir);
                 AppendLog("Лаунчер перенесён в папку игры: " + AppInfo.ExeDir + ". Со старого места удалено: " + (removed.Count == 0 ? "ничего" : string.Join(", ", removed)) +
                     ". На рабочем столе есть ярлык «" + Path.GetFileNameWithoutExtension(Shortcuts.LauncherLink) + "».", LogKind.Ok);
                 lblDetail.Text = Tr.T("Лаунчер перенесён в папку игры, на рабочем столе есть ярлык для запуска", "The launcher moved into the game folder; a shortcut is on the desktop");
@@ -52,7 +53,7 @@ namespace Paranoidal
                 start.SetBusy(Tr.T("Ищу Factorio…", "Looking for Factorio…"), "");
                 SetScreen(StartPanel.View.Busy);
             }
-            RunOp(() =>
+            RunOpSync(() =>
             {
                 Stage("Ищу Factorio…", "Looking for Factorio…");
                 Progress(null, "");
@@ -319,7 +320,7 @@ namespace Paranoidal
             if (then != null) afterEngine = then;
             if (engineStarting) return;
             engineStarting = true;
-            RunOp(() =>
+            RunOpSync(() =>
             {
                 try
                 {
@@ -364,7 +365,7 @@ namespace Paranoidal
         {
             var f0 = fac;
             var line = Lines.Current;
-            RunOp(() =>
+            RunOpSync(() =>
             {
                 var mods = LineMods(f0);
                 // a game folder copied elsewhere: the old absolute path of the mods folder points nowhere
@@ -417,19 +418,17 @@ namespace Paranoidal
         {
             if (engine == null) return;
             var mods = modsDir;
-            // the launcher's and the guide's releases are checked at the same time as the build
-            var releases = Task.Run(() => Releases.CheckAll());
-            // which game the latest build of the line needs (zzzparanoidal of the branch head on GitHub)
             var branch = Lines.Current.Branch;
-            var head = Task.Run(() => RemoteBuild.Info(branch));
-            RunOp(() =>
+            RunOp(async () =>
             {
-                var s = engine.CheckStatus(mods);
-                ReleaseCheck rc;
-                try { rc = releases.Result; } catch (Exception ex) { rc = new ReleaseCheck { LauncherError = ex.GetBaseException().Message, GuideError = ex.GetBaseException().Message }; }
-                BuildFound hi = null;
-                try { hi = head.Result; } catch { }
-                return Tuple.Create(s, rc, hi);
+                // the launcher's and the guide's releases are checked at the same time as the build
+                var releases = Releases.CheckAllAsync();
+                // which game the latest build of the line needs (zzzparanoidal of the branch head on GitHub)
+                var head = RemoteBuild.InfoAsync(branch);
+                StatusInfo s;
+                try { s = await engine.CheckStatusAsync(mods); }
+                finally { await Task.WhenAll(releases, head); }   // InfoAsync never throws; CheckAllAsync keeps the errors
+                return Tuple.Create(s, await releases, await head);
             }, async res =>
             {
                 var st = res.Item1;
@@ -543,12 +542,12 @@ namespace Paranoidal
                 return;
             }
             var known = guideRel;
-            RunOp(() =>
+            RunOp(async () =>
             {
                 Stage("Скачиваю гайд по сборке…", "Downloading the modpack guide…");
                 Progress(null, "");
-                var r = known ?? Releases.Latest(AppInfo.GuideRepo, "guide", AppInfo.GuideFile);
-                return InstallGuide(r);
+                var r = known ?? await Releases.LatestAsync(AppInfo.GuideRepo, "guide", AppInfo.GuideFile, ct: OpToken);
+                return await InstallGuideAsync(r);
             }, r =>
             {
                 guideRel = r;
@@ -560,14 +559,13 @@ namespace Paranoidal
             });
         }
 
-        /// <summary>Worker thread: downloads the guide of the release with progress; returns it.</summary>
-        ReleaseInfo InstallGuide(ReleaseInfo r)
+        /// <summary>Inside an operation: downloads the guide of the release with progress; returns it.</summary>
+        async Task<ReleaseInfo> InstallGuideAsync(ReleaseInfo r)
         {
-            Releases.Cancel = false;
             CanCancel(true);
             try
             {
-                GuideFile.Install(r, (d, t) => Progress(t > 0 ? d / (double)t : (double?)null, Fmt.Size(d) + " / " + Fmt.Size(t)));
+                await GuideFile.InstallAsync(r, (d, t) => Progress(t > 0 ? d / (double)t : (double?)null, Fmt.Size(d) + " / " + Fmt.Size(t)), OpToken);
             }
             catch (OperationCanceledException) { throw new SyncException("Скачивание гайда отменено.", "The guide download was cancelled."); }
             catch (SyncException) { throw; }
@@ -622,12 +620,11 @@ namespace Paranoidal
             var exe = SelfUpdate.CurrentExe;
             bool direct = AppInfo.ExeDirWritable;
             var file = direct ? exe + SelfUpdate.NewSuffix : Path.Combine(Path.GetTempPath(), "ParanoidalLauncher-" + r.Version + ".exe");
-            RunOp(() =>
+            RunOp(async () =>
             {
                 Stage("Скачиваю лаунчер " + r.Version + "…", "Downloading launcher " + r.Version + "…");
-                Releases.Cancel = false;
                 CanCancel(true);
-                try { Releases.Download(r, file, (d, t) => Progress(t > 0 ? d / (double)t : (double?)null, Fmt.Size(d) + " / " + Fmt.Size(t))); }
+                try { await Releases.DownloadAsync(r, file, (d, t) => Progress(t > 0 ? d / (double)t : (double?)null, Fmt.Size(d) + " / " + Fmt.Size(t)), OpToken); }
                 catch (OperationCanceledException) { throw; }
                 catch (Exception ex) { throw new SyncException("Новая версия лаунчера не скачана: " + ex.Message, "The new launcher version was not downloaded: " + ex.Message); }
                 var v = SelfUpdate.ExeVersion(file);
@@ -645,8 +642,8 @@ namespace Paranoidal
                     if (direct) SelfUpdate.Swap(file, exe);
                     else
                     {
-                        string err;
-                        if (!SelfUpdate.InstallElevated(exe, file, AppInfo.ExeDir, out err))
+                        var (ok, err) = await SelfUpdate.InstallElevatedAsync(exe, file, AppInfo.ExeDir);
+                        if (!ok)
                         {
                             AppendLog(err == null ? "Права администратора не выданы, лаунчер не обновлён." : "Лаунчер не обновлён: " + err, LogKind.Warn);
                             Idle(Tr.T("Лаунчер не обновлён", "The launcher was not updated"));
@@ -707,12 +704,12 @@ namespace Paranoidal
         {
             var f = fac;
             var mainMods = GameProfile.MainMods(f);
-            RunOp(() =>
+            RunOp(async () =>
             {
                 Stage("Готовлю профиль Space Age…", "Preparing the Space Age profile…");
                 Progress(null, "");
                 HashSet<string> entries = null;
-                try { if (mainMods != null && Directory.Exists(mainMods)) entries = engine.BuildEntries(new SyncPaths(mainMods)); } catch { }
+                try { if (mainMods != null && Directory.Exists(mainMods)) entries = await engine.BuildEntriesAsync(new SyncPaths(mainMods)); } catch { }
                 return GameProfile.PlanSpaceAge(f, GameProfile.Of(f, Lines.L21), mainMods, entries);
             }, async plan =>
             {
@@ -731,7 +728,7 @@ namespace Paranoidal
                     AppendLog("Установка Paranoidal 2.1 Space Age отменена.", LogKind.Muted);
                     return;
                 }
-                RunOp(() =>
+                RunOpSync(() =>
                 {
                     Stage("Создаю профиль Space Age…", "Creating the Space Age profile…");
                     Progress(0, "");
