@@ -53,11 +53,9 @@ namespace Paranoidal
                 return false;
             }
             if (Relocation.SameDir(target.Dir, AppInfo.ExeDir)) return false;
-            SetBusy(true);
             cancelable = false;
             btnCancel.IsEnabled = false;
-            try { return await RelocateTo(target); }
-            finally { if (!restarting) SetBusy(false); }
+            return await RelocateTo(target);
         }
 
         /// <summary>Tests: the answer to «several installations» (PARANOIDAL_LAUNCHER_TEST_CHOOSE).</summary>
@@ -149,8 +147,9 @@ namespace Paranoidal
             if (err != null) { await DarkDialog.Info(this, Tr.T("Папка модов", "Mods folder"), err, Gui.Red); return; }
             if (FactorioInfo.IsRunning()) { await DarkDialog.Info(this, Tr.T("Factorio запущена", "Factorio is running"), Tr.T("Закройте игру и запустите проверку снова.", "Close the game and start the check again."), Gui.Orange); return; }
             var mods = modsDir;
-            RunOp(() => engine.UpdateAsync(new SyncPaths(mods), true), res =>
-            {
+            var res = await Task.Run(() => engine.UpdateAsync(new SyncPaths(mods), true));
+            await FlushProgress();
+            if (closed) return;
                 installed = res.New;
                 progress.Value = 1;
                 int files = res.Mods.Sum(x => x.Files);
@@ -169,8 +168,7 @@ namespace Paranoidal
                     if (res.Mods.Count > 0) SelectTab(1);
                 }
                 modified = 0;
-                RefreshAfterUpdate();
-            });
+                await RefreshAfterUpdate();
         }
 
         void ApplyStatus(StatusInfo st, bool keepRemote)
@@ -216,6 +214,7 @@ namespace Paranoidal
 
         async Task DoUpdate(bool thenPlay, string target)
         {
+            OpToken.ThrowIfCancellationRequested();
             if (engine == null) return;
             if (target == null && Pinned) return;
             var err = SyncPaths.Validate(modsDir);
@@ -237,24 +236,26 @@ namespace Paranoidal
             var guide = GuideUpdate ? guideRel : null;
             bool build = !(guide != null && target == null && installed != null && installed == remote && modified <= 0);
             var seed = target == null ? seeding : null;
-            RunOp(async () =>
+            var outcome = await Task.Run(async () =>
             {
-                var o = new UpdateOutcome();
+                var result = new UpdateOutcome();
                 if (build)
                 {
                     engine.Seeded = seed;
-                    try { o.Res = await engine.UpdateAsync(new SyncPaths(mods), false, target); }
+                    try { result.Res = await engine.UpdateAsync(new SyncPaths(mods), false, target); }
                     finally { engine.Seeded = null; }
                 }
-                if (guide != null && (o.Res == null || !o.Res.Declined))
+                if (guide != null && (result.Res == null || !result.Res.Declined))
                 {
                     Stage("Скачиваю гайд по сборке " + guide.Version + "…", "Downloading the modpack guide " + guide.Version + "…");
-                    try { await InstallGuideAsync(guide); o.Guide = guide.Version; }
-                    catch (Exception ex) { o.GuideError = ex.Message; }
+                    try { await InstallGuideAsync(guide); result.Guide = guide.Version; }
+                    catch (Exception ex) { result.GuideError = ex.Message; }
                 }
-                return o;
-            }, o =>
-            {
+                return result;
+            });
+            await FlushProgress();
+            if (closed) return;
+                var o = outcome;
                 var res = o.Res;
                 if (res != null && seed != null) seeding = null;
                 if (res != null && res.Declined)
@@ -270,7 +271,7 @@ namespace Paranoidal
                     Idle(o.Guide != null ? Tr.T("Гайд по сборке обновлён", "The modpack guide is updated") : Tr.T("Гайд по сборке не обновлён", "The modpack guide was not updated"));
                     lblDetail.Text = o.Guide != null ? guideLocal : o.GuideError;
                     ReportGuide(o);
-                    if (thenPlay) Launch();
+                    if (thenPlay) await Launch();
                     return;
                 }
                 installed = res.New;
@@ -301,9 +302,8 @@ namespace Paranoidal
                     AppendLog("После перехода на версию хоста включено «Не менять версию». Снимите галочку, когда хост обновится.", LogKind.Info);
                 }
                 ReportGuide(o);
-                if (thenPlay) Launch();
-                else RefreshAfterUpdate();
-            });
+                if (thenPlay) await Launch();
+                else await RefreshAfterUpdate();
         }
 
         sealed class UpdateOutcome { public UpdateResult Res; public string Guide, GuideError; }
@@ -315,13 +315,15 @@ namespace Paranoidal
             else if (o.GuideError != null) AppendLog(o.GuideError + " Сборка от этого не зависит; гайд скачается при следующем обновлении.", LogKind.Warn);
         }
 
-        void RefreshAfterUpdate()
+        async Task RefreshAfterUpdate()
         {
+            OpToken.ThrowIfCancellationRequested();
             var stage = lblStage.Text;
             var detail = lblDetail.Text;
             var mods = modsDir;
-            RunOp(() => engine.CheckStatusAsync(mods), st =>
-            {
+            var st = await Task.Run(() => engine.CheckStatusAsync(mods));
+            await FlushProgress();
+            if (closed) return;
                 ApplyStatus(st, true);
                 // the game the build needs now (a newer build may need a newer game)
                 if (disk != null && disk.Present && Lines.Current.Matches(disk.FactorioVersion)) Lines.Current.SetRequired(disk.BaseMin);
@@ -330,7 +332,6 @@ namespace Paranoidal
                 progress.Value = 1;
                 lblDetail.Text = detail;
                 if (Auto && autoCloseAfterUpdate && !restarting) CloseLater();   // tests: the update after the move
-            });
         }
 
         void FillMods(List<ModChange> mods)
@@ -364,8 +365,9 @@ namespace Paranoidal
             if (r != DialogResult.Yes) return;
             var mods = modsDir;
             bool back = !rollbackNewer;
-            RunOp(() => engine.RollbackAsync(new SyncPaths(mods)), async res =>
-            {
+            var res = await Task.Run(() => engine.RollbackAsync(new SyncPaths(mods)));
+            await FlushProgress();
+            if (closed) return;
                 installed = res.New;
                 installedDate = null;
                 progress.Value = 1;
@@ -381,8 +383,7 @@ namespace Paranoidal
                 else lblDetail.Text = back && !pinSetting
                     ? Tr.T("Чтобы лаунчер не предлагал обновиться перед игрой, включите «Не менять версию»", "To stop the launcher offering the update before playing, turn on \"Keep this version\"")
                     : "";
-                RefreshAfterUpdate();
-            });
+                await RefreshAfterUpdate();
         }
 
         async Task DoHost()
@@ -409,7 +410,7 @@ namespace Paranoidal
                 return;
             }
             AppendLog("Версия хоста: " + line, LogKind.Info);
-            RunOp(async () =>
+            var res = await Task.Run(async () =>
             {
                 Stage("Ищу версию хоста на GitHub…", "Looking the host's version up on GitHub…");
                 Progress(null, "");
@@ -426,8 +427,9 @@ namespace Paranoidal
                 // a version of a build for another game (2.0): the launcher has no build for it
                 var game = bi != null && bl == null && bi.FactorioVersion != null && !Lines.L21.Matches(bi.FactorioVersion) ? Paranoidal.BuildLine.MajorMinor(bi.FactorioVersion) : null;
                 return Tuple.Create(ci, bl, game);
-            }, async res =>
-            {
+            });
+            await FlushProgress();
+            if (closed) return;
                 Idle("");
                 var c = res.Item1;
                 if (c == null) { await DarkDialog.Info(this, Tr.T("Версия хоста", "Host's version"), Tr.T("Версия не найдена на GitHub.", "The version was not found on GitHub."), Gui.Red); return; }
@@ -441,7 +443,6 @@ namespace Paranoidal
                     Tr.T("Скачается только разница. Текущая версия сохранится для отката.", "Only the difference is downloaded. The current version is kept for a rollback."),
                     null, Tr.T("Перейти", "Switch"), Tr.T("Отмена", "Cancel"), Gui.Title);
                 if (r == DialogResult.Yes) await DoUpdate(false, c.Sha);
-            });
         }
 
         // ------------------------------------------------------------------ game start
@@ -463,34 +464,36 @@ namespace Paranoidal
                 if (r == DialogResult.Yes) { await DoUpdate(true, null); return; }
                 if (r != DialogResult.No) return;
             }
-            Launch();
+            await Launch();
         }
 
-        void Launch()
+        async Task Launch()
         {
+            OpToken.ThrowIfCancellationRequested();
             if (fac == null || !fac.Ok || modsDir == null || engine == null) return;
             var mods = modsDir;
             var f = fac;
             var build = installed;
             bool cache = chkCache.Checked;
             var prof = GameProfile.Of(f, Lines.Current);
-            RunOp(async () =>
+            await Task.Run(async () =>
             {
                 var p = new SyncPaths(mods);
                 await engine.PrepareForPlayAsync(p);
                 engine.MarkPlayed(p, build);
                 // Factorio writes config.ini when it exits: change it only while the game is closed
-                if (FactorioInfo.IsRunning()) return true;
+                if (FactorioInfo.IsRunning()) return;
                 // the Space Age profile: its config.ini points at the profile folder (also after the game folder moved)
                 if (prof != null && prof.Own)
                 {
                     try { prof.PrepareConfig(); }
                     catch (Exception ex) { Log("Не удалось подготовить " + prof.ConfigPath + ": " + ex.Message, LogKind.Warn); }
                 }
-                if (!cache) return true;
+                if (!cache) return;
                 ReportCache(prof != null && prof.Own ? GameConfig.EnableCacheAt(prof.ConfigPath) : GameConfig.EnableCache(f.Dir, f.Exe), GameConfig.TildeMods(mods));
-                return true;
-            }, _ => StartGame());
+            });
+            await FlushProgress();
+            if (!closed) await StartGame();
         }
 
         /// <summary>Inside an operation: logs what GameConfig did.</summary>
@@ -540,14 +543,15 @@ namespace Paranoidal
         async Task WatchGame()
         {
             bool running = FactorioInfo.IsRunning();
-            if (gameRunning && !running) AnalyzeLoad();
+            bool analyze = gameRunning && !running;
             gameRunning = running;
             LogoArt.Paused = running || WindowState == WindowState.Minimized;
-            if (!running && selfUpdatePending && !busy) await OfferSelfUpdate();
+            if (analyze) await AnalyzeLoad();
+            if (!running && selfUpdatePending && !busy && !closeQuestionPending) await RunOperation(OfferSelfUpdate);
         }
 
         /// <summary>Reads the game's last log (the game must be closed) and shows how the load went and why.</summary>
-        async void AnalyzeLoad()
+        async Task AnalyzeLoad()
         {
             var f = fac;
             var mods = modsDir;
@@ -611,19 +615,13 @@ namespace Paranoidal
         {
             if (engine == null || modsDir == null) return null;
             if (installed == null && (found == null || !found.Present || found.Fingerprint == null)) return null;
-            if (busy) return null;
-            SetBusy(true);
             cancelable = false;
             btnCancel.IsEnabled = false;
-            try
-            {
-                List<string> foreign = null;
-                var mods = modsDir;
-                // Keep the build and the shared git runner unchanged until the line is complete.
-                try { foreign = installed != null ? await Task.Run(() => engine.ForeignEntriesAsync(new SyncPaths(mods))) : null; } catch { }
-                return VersionLine.Build(installed, installedDate, mods, foreign, modified, found != null ? found.Fingerprint : null, en);
-            }
-            finally { SetBusy(false); }
+            List<string> foreign = null;
+            var mods = modsDir;
+            // The scenario owner holds the build and git runner until both language variants are complete.
+            try { foreign = installed != null ? await Task.Run(() => engine.ForeignEntriesAsync(new SyncPaths(mods))) : null; } catch { }
+            return await Task.Run(() => VersionLine.Build(installed, installedDate, mods, foreign, modified, found != null ? found.Fingerprint : null, en));
         }
 
         async Task CopyCommit()
@@ -692,7 +690,7 @@ namespace Paranoidal
                 "Paranoidal-report-" + DateTime.Now.ToString("yyyyMMdd-HHmmss") + ".zip");
             var mods = modsDir;
             bool haveBuild = installed != null;
-            RunOp(async () =>
+            var res = await Task.Run(async () =>
             {
                 Stage("Собираю отчёт о проблеме…", "Building the problem report…");
                 Progress(null, "");
@@ -703,8 +701,9 @@ namespace Paranoidal
                     try { var fe = await engine.ForeignEntriesAsync(p); if (fe != null) inp.ForeignMods = VersionLine.Describe(mods, fe); } catch { }
                 }
                 return Report.Create(inp);
-            }, async res =>
-            {
+            });
+            await FlushProgress();
+            if (closed) return;
                 Idle(Tr.T("Отчёт готов", "The report is ready"));
                 lblDetail.Text = res.Zip + " (" + Fmt.Size(res.Size) + ")";
                 AppendLog("Отчёт о проблеме: " + res.Zip + " (" + Fmt.SizeRu(res.Size) + ", файлов " + res.Entries.Count + ")" +
@@ -713,7 +712,6 @@ namespace Paranoidal
                     await DarkDialog.Info(this, Tr.T("Отчёт о проблеме", "Problem report"), Tr.T("Архив создан, но сейв не добавлен: ", "The archive is ready, but the save was not added: ") +
                         Tr.T(res.SaveSkippedRu, res.SaveSkippedEn) + ".", Gui.Orange);
                 if (!Auto) { try { Shell.Reveal(res.Zip); } catch { } }
-            });
         }
 
         // ------------------------------------------------------------------ folders
@@ -752,7 +750,7 @@ namespace Paranoidal
             ForgetOtherGame();
             Settings.SetPath("factorio", f.Dir);
             // the Space Age profile belongs to a game folder: without one there the window goes back to 2.1
-            ApplyLine(Lines.Current.SpaceAge && !GameProfile.SpaceAgeExists(f) ? Lines.L21 : Lines.Current);
+            await ApplyLine(Lines.Current.SpaceAge && !GameProfile.SpaceAgeExists(f) ? Lines.L21 : Lines.Current);
         }
 
         async Task PickMods()
@@ -779,7 +777,7 @@ namespace Paranoidal
             Settings.SetPath("mods", modsDir);
             AppendLog("Папка модов: " + modsDir, LogKind.Info);
             UpdateUi();
-            CheckStatus();
+            await CheckStatus();
         }
 
         /// <summary>
@@ -789,7 +787,7 @@ namespace Paranoidal
         /// </summary>
         async Task PickSpaceAgeFolder(string preset)
         {
-            if (busy || fac == null || engine == null) return;
+            if (fac == null || engine == null) return;
             if (FactorioInfo.IsRunning())
             {
                 await DarkDialog.Info(this, Tr.T("Factorio запущена", "Factorio is running"), Tr.T("Закройте игру и выберите папку снова.", "Close the game and choose the folder again."), Gui.Orange);
@@ -806,8 +804,8 @@ namespace Paranoidal
             var f = fac;
             // tests: the launcher closes when the choice ends without a move (with one it closes after the status check)
             Action end = () => { if (Auto) CloseLater(); };
-            RunOpSync(() => GameProfile.PlanMove(from, dir, GameProfile.MainMods(f), f.Dir), async plan =>
-            {
+            var plan = await Task.Run(() => GameProfile.PlanMove(from, dir, GameProfile.MainMods(f), f.Dir));
+            if (closed) return;
                 if (plan.Same)
                 {
                     AppendLog("Профиль Space Age уже лежит в " + plan.To + ".", LogKind.Muted);
@@ -827,7 +825,7 @@ namespace Paranoidal
                     if (!await Dialogs.ConfirmUseProfile(this, plan)) { end(); return; }
                     Settings.SetPath("sa-root", plan.To);
                     AppendLog("Профиль Space Age: теперь используется " + plan.To + ", прежний " + plan.From + " остался на месте.", LogKind.Ok);
-                    ApplyLine(Lines.SA);
+                    await ApplyLine(Lines.SA);
                     return;
                 }
                 if (!plan.FromExists)
@@ -835,13 +833,13 @@ namespace Paranoidal
                     // nothing installed yet: «Установить» puts the profile there
                     Settings.SetPath("sa-root", plan.To);
                     AppendLog("Профиль Space Age будет установлен в " + plan.To + ".", LogKind.Ok);
-                    ApplyLine(Lines.SA);
+                    await ApplyLine(Lines.SA);
                     return;
                 }
                 if (!await Dialogs.ConfirmProfileMove(this, plan)) { end(); return; }
                 autoCloseAfterUpdate = Auto;   // tests: a failed move closes the launcher too
                 AppendLog("Переношу профиль Space Age: " + plan.From + " → " + plan.To + " (" + Fmt.SizeRu(plan.Bytes) + (plan.SameVolume ? ", тот же диск" : ", другой диск") + ").", LogKind.Info);
-                RunOpSync(() =>
+                await Task.Run(() =>
                 {
                     CanCancel(false);
                     Stage("Переношу профиль Space Age…", "Moving the Space Age profile…");
@@ -852,23 +850,22 @@ namespace Paranoidal
                         throw new SyncException("Профиль Space Age не перенесён: " + ex.Message + "\nПрофиль остался в " + plan.From + ".",
                             "The Space Age profile was not moved: " + ex.Message + "\nThe profile stays in " + plan.From + ".");
                     }
-                    return true;
-                }, _ =>
-                {
-                    AppendLog("Профиль Space Age перенесён: " + plan.To + ".", LogKind.Ok);
-                    ApplyLine(Lines.SA);
-                    lblDetail.Text = Tr.T("Профиль Space Age перенесён в ", "The Space Age profile moved to ") + plan.To;
                 });
-            });
+                await FlushProgress();
+                if (closed) return;
+                    AppendLog("Профиль Space Age перенесён: " + plan.To + ".", LogKind.Ok);
+                    await ApplyLine(Lines.SA);
+                    lblDetail.Text = Tr.T("Профиль Space Age перенесён в ", "The Space Age profile moved to ") + plan.To;
         }
 
-        void CancelOp()
+        async Task CancelOp()
         {
             if (!busy || !cancelable) return;
             btnCancel.IsEnabled = false;
             lblStage.Text = Tr.T("Отменяю…", "Cancelling…");
             opCancel.Cancel();
-            if (git != null) Task.Run(() => git.Cancel());
+            gitCancellation = git != null ? Task.Run(() => git.Cancel()) : Task.CompletedTask;
+            await gitCancellation;
         }
 
         // ------------------------------------------------------------------ closing
@@ -884,8 +881,23 @@ namespace Paranoidal
                 try { File.AppendAllText(TestAuto, "=== " + AppInfo.Version + " pid " + Environment.ProcessId + " " + SelfUpdate.CurrentExe + Environment.NewLine + rtbLog.Text.Replace("\n", Environment.NewLine) + Environment.NewLine); } catch { }
             if (restarting || closeConfirmed || !busy) { base.OnClosing(e); return; }
             e.Cancel = true;
+            if (closeQuestionPending) return;
+            closeQuestionPending = true;
             Dispatcher.UIThread.Post(async () =>
             {
+                try { await ConfirmClose(); }
+                catch (Exception ex) { Program.Crash(ex, true); }
+            });
+        }
+
+        bool closeQuestionPending;
+
+        async Task ConfirmClose()
+        {
+            try
+            {
+                var owner = opCancel;
+                if (closed) return;
                 if (!busy) { closeConfirmed = true; Close(); return; }
                 if (!cancelable)
                 {
@@ -897,11 +909,13 @@ namespace Paranoidal
                     Tr.T("Файлы модов не изменятся, уже скачанное сохранится.", "The mod files do not change; what was downloaded is kept."),
                     null, Tr.T("Прервать и закрыть", "Stop and close"), Tr.T("Продолжить", "Continue"), Gui.Title, ButtonKind.Danger);
                 if (r != DialogResult.Yes) return;
-                opCancel.Cancel();
-                if (git != null) await Task.Run(() => git.Cancel());
+                if (closed || owner != opCancel) return;
+                if (busy && !cancelable) return;
+                if (busy) await CancelOp();
                 closeConfirmed = true;
                 Close();
-            });
+            }
+            finally { closeQuestionPending = false; }
         }
 
         protected override void OnClosed(EventArgs e)

@@ -53,9 +53,8 @@ namespace Paranoidal
         // the start window: the choice of the build, no suitable game, a wait (StartScreen.cs)
         readonly StartPanel start = new StartPanel();
         bool mainShown, opened, closed;
-        // the engine is being created (MinGit unpacked) and what runs when it is ready
-        bool engineStarting;
-        Action afterEngine;
+        // The one initialization task is awaited by every scenario that needs the engine.
+        Task engineStartup;
         // settings of the line 2.0 of launchers 1.3.0 and 1.4.0 were reset at this start (ForgetLine20)
         static string line20Note;
         readonly FProgress progress = new FProgress();
@@ -162,8 +161,16 @@ namespace Paranoidal
             // the build tabs and «Спрашивать сборку при запуске» at their right
             tab21.Text = Lines.L21.Name;
             tabSa.Text = Lines.SA.Name;
-            tab21.Click += async () => await SwitchLine(Lines.L21);
-            tabSa.Click += async () => await SwitchLine(Lines.SA);
+            tab21.Click += async () =>
+            {
+                try { await RunOperation(() => SwitchLine(Lines.L21)); }
+                catch (Exception ex) { Program.Crash(ex, true); }
+            };
+            tabSa.Click += async () =>
+            {
+                try { await RunOperation(() => SwitchLine(Lines.SA)); }
+                catch (Exception ex) { Program.Crash(ex, true); }
+            };
             chkAsk = Check(root, Settings.Get("ask-build") != "0");
             chkAsk.CheckedChanged += () =>
             {
@@ -174,11 +181,34 @@ namespace Paranoidal
 
             // the start window
             start.BtnLang.Click += () => Tr.Set(!Tr.En);
-            start.Card21.Click += () => PickBuild(Lines.L21);
-            start.CardSa.Click += () => PickBuild(Lines.SA);
+            start.Card21.Click += async () =>
+            {
+                try { await RunOperation(() => PickBuild(Lines.L21)); }
+                catch (Exception ex) { Program.Crash(ex, true); }
+            };
+            start.CardSa.Click += async () =>
+            {
+                try { await RunOperation(() => PickBuild(Lines.SA)); }
+                catch (Exception ex) { Program.Crash(ex, true); }
+            };
             start.BtnClose.Click += () => { AppendLog("Подходящей Factorio нет, лаунчер закрыт кнопкой «Закрыть».", LogKind.Muted); Close(); };
-            start.BtnPick.Click += async () => await PickGameForStart();
-            start.BtnRecheck.Click += () => { AppendLog("«Проверить снова»: ищу Factorio ещё раз.", LogKind.Info); DetectGame(); };
+            start.BtnPick.Click += async () =>
+            {
+                try { await RunOperation(PickGameForStart); }
+                catch (Exception ex) { Program.Crash(ex, true); }
+            };
+            start.BtnRecheck.Click += async () =>
+            {
+                try
+                {
+                    await RunOperation(async () =>
+                    {
+                        AppendLog("«Проверить снова»: ищу Factorio ещё раз.", LogKind.Info);
+                        await DetectGame();
+                    });
+                }
+                catch (Exception ex) { Program.Crash(ex, true); }
+            };
 
             lblInstalled = L(cardBuild, Gui.Text);
             lblRemote = L(cardBuild, Gui.Text);
@@ -219,7 +249,12 @@ namespace Paranoidal
             btnVerify = B(cardAction, "", ButtonKind.Normal, DoVerify);
             btnCheck = B(cardAction, "", ButtonKind.Normal, CheckStatus);
             btnReport = B(root, "", ButtonKind.Normal, DoReport);
-            btnCancel = B(cardAction, "", ButtonKind.Normal, CancelOp);
+            btnCancel = B(cardAction, "", ButtonKind.Normal, (Action)CancelClicked);
+            async void CancelClicked()
+            {
+                try { await CancelOp(); }
+                catch (Exception ex) { Program.Crash(ex, true); }
+            }
             btnCancel.IsVisible = false;
 
             lblStage = L(cardAction, Gui.Title, Gui.Bold);
@@ -241,7 +276,11 @@ namespace Paranoidal
             }
             SelectTab(0);
 
-            gameWatch.Tick += async (s, e) => await WatchGame();
+            gameWatch.Tick += async (s, e) =>
+            {
+                try { if (!busy) await WatchGame(); }
+                catch (Exception ex) { Program.Crash(ex, true); }
+            };
             Tr.Changed += () =>
             {
                 ApplyTexts();
@@ -260,7 +299,11 @@ namespace Paranoidal
                     AppendLog("Лаунчер запущен ещё раз, показываю это окно.", LogKind.Muted);
                     if (!Auto) { try { BringUp(); } catch { } }
                 });
-                Opened += (s, e) => { opened = true; Startup(); };
+                Opened += async (s, e) =>
+                {
+                    try { opened = true; await RunOperation(Startup); }
+                    catch (Exception ex) { Program.Crash(ex, true); }
+                };
             }
             else Opened += (s, e) => opened = true;
             ApplyTexts();
@@ -400,11 +443,15 @@ namespace Paranoidal
             return b;
         }
 
-        /// <summary>A button whose action may ask (a dialog): an error in it reaches the crash handler of Program.cs.</summary>
-        static FButton B(DrawCanvas parent, string text, ButtonKind kind, Func<Task> click, bool big = false)
+        /// <summary>The event awaits the complete scenario and handles unexpected errors on the UI thread.</summary>
+        FButton B(DrawCanvas parent, string text, ButtonKind kind, Func<Task> click, bool big = false)
         {
-            Action handler = async () => await click();   // async void: the click starts the action and returns
-            return B(parent, text, kind, handler, big);
+            return B(parent, text, kind, (Action)Clicked, big);
+            async void Clicked()
+            {
+                try { await RunOperation(click); }
+                catch (Exception ex) { Program.Crash(ex, true); }
+            }
         }
 
         static StatusLine Status(DrawCanvas parent, FFont font)
@@ -823,6 +870,8 @@ namespace Paranoidal
             btnOpenMods.IsEnabled = modsOk;
             chkCache.IsEnabled = !busy;
             chkPin.IsEnabled = !busy && installed != null;
+            start.Card21.IsEnabled = start.CardSa.IsEnabled = !busy;
+            start.BtnPick.IsEnabled = start.BtnRecheck.IsEnabled = !busy;
         }
 
         void Status(string text, Color c)
@@ -958,36 +1007,29 @@ namespace Paranoidal
 
         // ------------------------------------------------------------------ operations
 
-        /// <summary>An operation whose work has no awaits (file copies, a zip, the game search): it runs on the thread pool too.</summary>
-        void RunOpSync<T>(Func<T> work, Action<T> done) => RunOp(() => Task.FromResult(work()), r => { done(r); return Task.CompletedTask; });
-        void RunOpSync<T>(Func<T> work, Func<T, Task> done) => RunOp(() => Task.FromResult(work()), done);
-        void RunOp<T>(Func<Task<T>> work, Action<T> done) => RunOp(work, r => { done(r); return Task.CompletedTask; });
-
-        /// <summary>The token of the running operation: «Отмена» and closing the window cancel it (downloads of releases).</summary>
+        /// <summary>The token belongs to the entire scenario, including all its sequential steps.</summary>
         CancellationToken OpToken => opCancel.Token;
         CancellationTokenSource opCancel = new CancellationTokenSource();
+        Task gitCancellation = Task.CompletedTask;
+
+        // Worker progress is posted at default priority. Drain it before applying the final UI state.
+        static async Task FlushProgress() => await Dispatcher.UIThread.InvokeAsync(() => { }, DispatcherPriority.Default);
 
         /// <summary>
-        /// An operation: `work` on the thread pool (the window is busy meanwhile; the engine's awaits continue there), then
-        /// `done` on the UI thread; `done` may ask (a dialog) and the operation ends with its answer. An error is shown in
-        /// the window and in a dialog.
+        /// Only event boundaries acquire ownership. Scenario methods await each other directly, so nested steps never
+        /// release another step's busy state or replace its cancellation source. Expensive work explicitly uses Task.Run.
         /// </summary>
-        async void RunOp<T>(Func<Task<T>> work, Func<T, Task> done)
+        async Task RunOperation(Func<Task> scenario)
         {
+            if (busy || closed || restarting || closeQuestionPending) return;
+            opCancel.Dispose();
+            opCancel = new CancellationTokenSource();
             SetBusy(true);
-            if (opCancel.IsCancellationRequested) { opCancel.Dispose(); opCancel = new CancellationTokenSource(); }
-            T result = default(T);
-            Exception error = null;
-            try { result = await Task.Run(work); }
-            catch (Exception ex) { error = ex; }
-            // the worker's last Log/Stage/Progress (Dispatcher.Post, default priority) are still queued, and an await
-            // continuation runs before them: let them run first, so `done` sets the final state and its journal lines
-            // come after the operation's own
-            await Dispatcher.UIThread.InvokeAsync(() => { }, DispatcherPriority.Default);
-            if (closed) return;
-            SetBusy(false);
-            if (error != null)
+            try { await scenario(); }
+            catch (Exception error)
             {
+                await FlushProgress();
+                if (closed) return;
                 if (error is OperationCanceledException)
                 {
                     Idle(Tr.T("Отменено.", "Cancelled."));
@@ -1004,12 +1046,14 @@ namespace Paranoidal
                     AppendLog(se != null ? error.Message : error.ToString(), LogKind.Error);
                     await DarkDialog.Info(this, Tr.T("Ошибка", "Error"), shown, Gui.Red);
                 }
-                UpdateUi();
                 if (Auto && autoCloseAfterUpdate && !restarting) CloseLater();
-                return;
             }
-            await done(result);
-            UpdateUi();
+            finally
+            {
+                await gitCancellation;
+                await FlushProgress();
+                if (!closed) SetBusy(false);
+            }
         }
     }
 }

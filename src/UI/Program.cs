@@ -60,7 +60,7 @@ namespace Paranoidal
 
         public static AppBuilder BuildAvaloniaApp() => AppBuilder.Configure<App>().UsePlatformDetect();
 
-        static void Crash(Exception ex, bool ui)
+        internal static void Crash(Exception ex, bool ui)
         {
             try
             {

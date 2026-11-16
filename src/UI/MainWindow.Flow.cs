@@ -14,7 +14,7 @@ namespace Paranoidal
         sealed class StartData { public FactorioInfo Fac, Saved; public bool FromSettings; public List<FactorioInfo> All; }
 
         /// <summary>The window is shown: the journal's first lines, cleanup after an update or a move, then the game search.</summary>
-        async void Startup()
+        async Task Startup()
         {
             AppendLog(AppInfo.Name + " " + AppInfo.Version, LogKind.Muted);
             AppendLog("Данные лаунчера: " + AppInfo.DataDir, LogKind.Muted);
@@ -23,7 +23,7 @@ namespace Paranoidal
             if (AppInfo.TestOffline) AppendLog("Тестовый режим: связь с GitHub отключена (PARANOIDAL_LAUNCHER_TEST_OFFLINE=1).", LogKind.Warn);
             if (Releases.Base != "https://github.com") AppendLog("Тестовый режим: релизы лаунчера и гайда берутся с " + Releases.Base + ".", LogKind.Warn);
             var exePath = SelfUpdate.CurrentExe;
-            await SelfUpdate.CleanupOldAsync(exePath);
+            await Task.Run(() => SelfUpdate.CleanupOldAsync(exePath));
             if (StartArgs.UpdatedFrom != null)
             {
                 AppendLog("Лаунчер обновлён: " + StartArgs.UpdatedFrom + " → " + AppInfo.Version + ".", LogKind.Ok);
@@ -31,14 +31,14 @@ namespace Paranoidal
             }
             if (StartArgs.MovedFrom != null)
             {
-                var removed = await Relocation.CleanupOldPlaceAsync(StartArgs.MovedFrom, exePath, AppInfo.DataDir);
+                var removed = await Task.Run(() => Relocation.CleanupOldPlaceAsync(StartArgs.MovedFrom, exePath, AppInfo.DataDir));
                 AppendLog("Лаунчер перенесён в папку игры: " + AppInfo.ExeDir + ". Со старого места удалено: " + (removed.Count == 0 ? "ничего" : string.Join(", ", removed)) +
                     ". На рабочем столе есть ярлык «" + Path.GetFileNameWithoutExtension(Shortcuts.LauncherLink) + "».", LogKind.Ok);
                 lblDetail.Text = Tr.T("Лаунчер перенесён в папку игры, на рабочем столе есть ярлык для запуска", "The launcher moved into the game folder; a shortcut is on the desktop");
             }
             RefreshGuideLocal();
             RefreshStartTexts();
-            DetectGame();
+            await DetectGame();
         }
 
         /// <summary>
@@ -46,27 +46,30 @@ namespace Paranoidal
         /// searched (the launcher lies in a Factorio 2.0.77 folder or in Downloads, the game was moved). Then the launcher
         /// moves into the folder of the suitable game, or the start window says that none fits.
         /// </summary>
-        void DetectGame()
+        async Task DetectGame()
         {
             if (!mainShown)
             {
                 start.SetBusy(Tr.T("Ищу Factorio…", "Looking for Factorio…"), "");
                 SetScreen(StartPanel.View.Busy);
             }
-            RunOpSync(() =>
+            var sd = await Task.Run(() =>
             {
                 Stage("Ищу Factorio…", "Looking for Factorio…");
                 Progress(null, "");
-                var sd = new StartData();
-                sd.Saved = FactorioInfo.Inspect(Settings.GetPath("factorio"));
+                var detected = new StartData();
+                detected.Saved = FactorioInfo.Inspect(Settings.GetPath("factorio"));
                 // the player postponed the choice of installation last time: the saved game is only the one used meanwhile
                 bool ask = Settings.Get("pick-install") == "1";
-                if (sd.Saved != null && sd.Saved.Ok && !ask) { sd.Fac = sd.Saved; sd.FromSettings = true; return sd; }
-                sd.All = FactorioInfo.DetectAll(AppDomain.CurrentDomain.BaseDirectory);
-                if (sd.Saved != null && !sd.All.Any(x => Relocation.SameDir(x.Dir, sd.Saved.Dir))) sd.All.Insert(0, sd.Saved);
-                sd.Fac = ask && sd.Saved != null && sd.Saved.Ok ? sd.Saved : sd.All.FirstOrDefault(x => x.Ok);
-                return sd;
-            }, AfterDetect);
+                if (detected.Saved != null && detected.Saved.Ok && !ask) { detected.Fac = detected.Saved; detected.FromSettings = true; return detected; }
+                detected.All = FactorioInfo.DetectAll(AppDomain.CurrentDomain.BaseDirectory);
+                if (detected.Saved != null && !detected.All.Any(x => Relocation.SameDir(x.Dir, detected.Saved.Dir))) detected.All.Insert(0, detected.Saved);
+                detected.Fac = ask && detected.Saved != null && detected.Saved.Ok ? detected.Saved : detected.All.FirstOrDefault(x => x.Ok);
+                return detected;
+            });
+            await FlushProgress();
+            if (closed) return;
+            await AfterDetect(sd);
         }
 
         async Task AfterDetect(StartData sd)
@@ -84,14 +87,14 @@ namespace Paranoidal
             fac = sd.Fac;
             // the launcher lay in another game's folder (Factorio 2.0.77): its copy in the new folder forgets that game
             if (await MaybeRelocate(sd.All, sd.FromSettings)) return;   // the copy in the game folder takes over
-            AcceptGame();
+            await AcceptGame();
         }
 
         /// <summary>
         /// The suitable game is known and the launcher stays where it is: settings of another game folder go (its mods
         /// folder, Space Age profile, pin), then the start window or, with a remembered build, the main window.
         /// </summary>
-        void AcceptGame()
+        async Task AcceptGame()
         {
             ForgetOtherGame();
             Settings.SetPath("factorio", fac.Dir);
@@ -99,11 +102,12 @@ namespace Paranoidal
             AppendLog("Factorio: " + fac.Dir + " (" + fac.Describe(false) + ")", LogKind.Ok);
             if (mainShown)
             {
-                if (Lines.Current.SpaceAge && !GameProfile.SpaceAgeExists(fac)) { ShowSelector(); return; }
-                EnsureEngine(StartLine);
+                if (Lines.Current.SpaceAge && !GameProfile.SpaceAgeExists(fac)) { await ShowSelector(); return; }
+                await EnsureEngine();
+                if (!closed) await StartLine();
                 return;
             }
-            ShowSelector();
+            await ShowSelector();
         }
 
         /// <summary>
@@ -244,37 +248,37 @@ namespace Paranoidal
         }
 
         /// <summary>The start window: the choice of the build. Tests pick it (PARANOIDAL_LAUNCHER_TEST_PICK).</summary>
-        void ShowSelector()
+        async Task ShowSelector()
         {
             if (Auto)
             {
                 var pick = TestPick == "sa" ? Lines.SA : TestPick == "21" ? Lines.L21 : Lines.Current;
                 AppendLog("[тест: окно выбора сборки без показа, выбрана " + pick.Name + "]", LogKind.Muted);
-                ChooseBuild(pick, false);
+                await ChooseBuild(pick, false);
                 return;
             }
             start.Show(StartPanel.View.Selector);
             RefreshStartTexts();
             SetScreen(StartPanel.View.Selector);
-            EnsureEngine(null);   // MinGit is unpacked while the player chooses
+            await EnsureEngine();   // selection becomes available after MinGit is ready
         }
 
         /// <summary>A card of the start window was clicked.</summary>
-        void PickBuild(BuildLine line)
+        async Task PickBuild(BuildLine line)
         {
             if (mainShown || start.Current != StartPanel.View.Selector) return;
-            ChooseBuild(line, start.ChkRemember.Checked);
+            await ChooseBuild(line, start.ChkRemember.Checked);
         }
 
-        void ChooseBuild(BuildLine line, bool remember)
+        async Task ChooseBuild(BuildLine line, bool remember)
         {
             AppendLog("Выбрана сборка " + line.Name + (remember ? ", выбор запомнен: окно выбора больше не покажется" : "") + ".", LogKind.Info);
             if (remember) chkAsk.Checked = false;   // also writes ask-build=0 and logs it
-            OpenLine(line);   // nothing is installed until the player presses «Установить»
+            await OpenLine(line);   // nothing is installed until the player presses «Установить»
         }
 
         /// <summary>The main window with the chosen build (from the start window): its mods folder, the status check.</summary>
-        void OpenLine(BuildLine line)
+        async Task OpenLine(BuildLine line)
         {
             Lines.Set(line);
             Settings.Set("line", line.Id);
@@ -283,7 +287,8 @@ namespace Paranoidal
             SetScreen(null);
             ApplyTexts();
             UpdateUi();
-            EnsureEngine(StartLine);
+            await EnsureEngine();
+            if (!closed) await StartLine();
         }
 
         /// <summary>«Выбрать папку игры…» of «no suitable Factorio»: the chosen game, then the same way as a game found.</summary>
@@ -311,42 +316,27 @@ namespace Paranoidal
             await AfterDetect(new StartData { Fac = f, FromSettings = true });
         }
 
-        /// <summary>
-        /// The engine (MinGit unpacked, git, SyncEngine) once, then `then`; while it is being created the last `then` waits.
-        /// </summary>
-        void EnsureEngine(Action then)
+        /// <summary>One initialization task, shared by every caller; no callback can replace another caller's continuation.</summary>
+        Task EnsureEngine() => engineStartup ??= CreateEngine();
+
+        async Task CreateEngine()
         {
-            if (engine != null) { if (then != null) then(); return; }
-            if (then != null) afterEngine = then;
-            if (engineStarting) return;
-            engineStarting = true;
-            RunOpSync(() =>
+            try
             {
-                try
+                git = await Task.Run(() =>
                 {
                     var exe = GitBootstrap.Ensure(Stage);
-                    return Tuple.Create(new GitRunner(exe, Path.Combine(AppInfo.DataDir, "no-global-config")), (Exception)null);
-                }
-                catch (Exception ex) { return Tuple.Create((GitRunner)null, ex); }
-            }, async r =>
-            {
-                engineStarting = false;
-                if (r.Item2 != null)
-                {
-                    afterEngine = null;
-                    var se = r.Item2 as SyncException;
-                    AppendLog("Встроенный Git не подготовлен: " + (se != null ? se.Message : r.Item2.ToString()), LogKind.Error);
-                    await DarkDialog.Info(this, Tr.T("Ошибка", "Error"), se != null ? se.Display : r.Item2.Message, Gui.Red);
-                    if (!mainShown) SetScreen(null);   // the window with the journal and «Отчёт о проблеме»
-                    Idle(Tr.T("Ошибка", "Error"));
-                    return;
-                }
-                git = r.Item1;
+                    return new GitRunner(exe, Path.Combine(AppInfo.DataDir, "no-global-config"));
+                });
                 engine = new SyncEngine(git, this);
-                var a = afterEngine;
-                afterEngine = null;
-                if (a != null) a();
-            });
+                await FlushProgress();
+            }
+            catch
+            {
+                engineStartup = null;
+                if (!closed && !mainShown) SetScreen(null);
+                throw;
+            }
         }
 
         /// <summary>
@@ -361,33 +351,34 @@ namespace Paranoidal
         }
 
         /// <summary>The main window serves the current line: its mods folder, the game it needs, the load diagnostics, the status check.</summary>
-        void StartLine()
+        async Task StartLine()
         {
+            OpToken.ThrowIfCancellationRequested();
             var f0 = fac;
             var line = Lines.Current;
-            RunOpSync(() =>
+            var mods = await Task.Run(() =>
             {
-                var mods = LineMods(f0);
+                var path = LineMods(f0);
                 // a game folder copied elsewhere: the old absolute path of the mods folder points nowhere
                 // (the Space Age profile folder is created by the update)
-                if (mods != null && !line.SpaceAge && !Directory.Exists(Path.GetDirectoryName(mods) ?? mods)) mods = null;
+                if (path != null && !line.SpaceAge && !Directory.Exists(Path.GetDirectoryName(path) ?? path)) path = null;
                 // the game the installed build needs (zzzparanoidal: base >= x.y.z), before the game is checked
-                var b = BuildFound.Scan(mods ?? Path.Combine(f0.Dir, "mods"));
+                var b = BuildFound.Scan(path ?? Path.Combine(f0.Dir, "mods"));
                 if (b.Present && line.Matches(b.FactorioVersion)) line.SetRequired(b.BaseMin);
-                return mods;
-            }, mods =>
-            {
-                modsDir = mods ?? Path.Combine(fac.Dir, "mods");
-                AppendLog("Сборка " + line.Name + ", папка модов: " + modsDir + ".", LogKind.Info);
-                if (!line.SpaceAge) Settings.SetPath("mods", modsDir);
-                ApplyTexts();
-                UpdateUi();
-                gameRunning = FactorioInfo.IsRunning();
-                LogoArt.Paused = gameRunning || WindowState == WindowState.Minimized;
-                gameWatch.Start();
-                if (!gameRunning) AnalyzeLoad();
-                CheckStatus();
+                return path;
             });
+            await FlushProgress();
+            if (closed) return;
+            modsDir = mods ?? Path.Combine(fac.Dir, "mods");
+            AppendLog("Сборка " + line.Name + ", папка модов: " + modsDir + ".", LogKind.Info);
+            if (!line.SpaceAge) Settings.SetPath("mods", modsDir);
+            ApplyTexts();
+            UpdateUi();
+            gameRunning = FactorioInfo.IsRunning();
+            LogoArt.Paused = gameRunning || WindowState == WindowState.Minimized;
+            gameWatch.Start();
+            if (!gameRunning) await AnalyzeLoad();
+            await CheckStatus();
         }
 
         /// <summary>The line under the buttons after a status check, from the current state (also after a language switch).</summary>
@@ -414,12 +405,13 @@ namespace Paranoidal
             else return Tr.T("Доступно обновление сборки", "A build update is available") + (remoteDate != null ? Tr.T(" от ", " of ") + remoteDate : "");
         }
 
-        void CheckStatus()
+        async Task CheckStatus()
         {
+            OpToken.ThrowIfCancellationRequested();
             if (engine == null) return;
             var mods = modsDir;
             var branch = Lines.Current.Branch;
-            RunOp(async () =>
+            var res = await Task.Run(async () =>
             {
                 // the launcher's and the guide's releases are checked at the same time as the build
                 var releases = Releases.CheckAllAsync();
@@ -429,46 +421,46 @@ namespace Paranoidal
                 try { s = await engine.CheckStatusAsync(mods); }
                 finally { await Task.WhenAll(releases, head); }   // InfoAsync never throws; CheckAllAsync keeps the errors
                 return Tuple.Create(s, await releases, await head);
-            }, async res =>
-            {
-                var st = res.Item1;
-                ApplyStatus(st, false);
-                ApplyRequirement(res.Item3);
-                ApplyReleases(res.Item2, st.Offline);
-                Idle(StatusIdleText());
-                progress.Value = installed != null && installed == remote ? 1 : 0;
-                if (adopted)
-                    lblDetail.Text = Tr.T("Сборка в папке mods опознана: версия от ", "The build in the mods folder was recognised: the version of ") + installedDate;
-                else
-                    lblDetail.Text = st.CommitsAreNew && st.Commits != null
-                        ? Tr.T("Новых изменений в сборке: ", "New changes in the build: ") + st.Commits.Count + Tr.T(", они на вкладке «Что нового»", ", listed on the \"What's new\" tab")
-                        : lblDetail.Text.StartsWith(Tr.T("Лаунчер ", "The launcher ")) ? lblDetail.Text : "";
-                // tests: one switch of the build after the first check, then «Установить»/«Обновить» if asked
-                if (Auto && TestSwitch != null && !testSwitched && !restarting && !busy)
-                {
-                    testSwitched = true;
-                    await SwitchLine(TestSwitch == "sa" ? Lines.SA : Lines.L21);
-                    if (busy) return;
-                }
-                if (Auto && TestSaFolder != null && !testMoved && !restarting && !busy && Lines.Current.SpaceAge)
-                {
-                    testMoved = true;
-                    AppendLog("[тест: «Выбрать…» папки модов Space Age: " + TestSaFolder + "]", LogKind.Muted);
-                    await PickSpaceAgeFolder(TestSaFolder);
-                    if (busy) return;
-                }
-                if (Auto && TestInstall && !testInstalled && !restarting && !busy && UpdateWanted)
-                {
-                    testInstalled = true;
-                    autoCloseAfterUpdate = true;
-                    AppendLog("[тест: нажата «" + btnUpdate.Text + "»]", LogKind.Muted);
-                    await InstallOrUpdate();
-                    if (busy) return;
-                }
-                await OfferSelfUpdate();
-                if (Auto && !restarting && !busy && guideLocal == null && guideRel != null) await OpenGuide();   // tests: the download path of «Гайд»
-                else if (Auto && !restarting && !busy) CloseLater();
             });
+            await FlushProgress();
+            if (closed) return;
+            var st = res.Item1;
+            ApplyStatus(st, false);
+            ApplyRequirement(res.Item3);
+            ApplyReleases(res.Item2, st.Offline);
+            Idle(StatusIdleText());
+            progress.Value = installed != null && installed == remote ? 1 : 0;
+            if (adopted)
+                lblDetail.Text = Tr.T("Сборка в папке mods опознана: версия от ", "The build in the mods folder was recognised: the version of ") + installedDate;
+            else
+                lblDetail.Text = st.CommitsAreNew && st.Commits != null
+                    ? Tr.T("Новых изменений в сборке: ", "New changes in the build: ") + st.Commits.Count + Tr.T(", они на вкладке «Что нового»", ", listed on the \"What's new\" tab")
+                    : lblDetail.Text.StartsWith(Tr.T("Лаунчер ", "The launcher ")) ? lblDetail.Text : "";
+            // tests: one switch of the build after the first check, then «Установить»/«Обновить» if asked
+            if (Auto && TestSwitch != null && !testSwitched && !restarting)
+            {
+                testSwitched = true;
+                var to = TestSwitch == "sa" ? Lines.SA : Lines.L21;
+                if (to != Lines.Current) { await SwitchLine(to); return; }
+            }
+            if (Auto && TestSaFolder != null && !testMoved && !restarting && Lines.Current.SpaceAge)
+            {
+                testMoved = true;
+                AppendLog("[тест: «Выбрать…» папки модов Space Age: " + TestSaFolder + "]", LogKind.Muted);
+                await PickSpaceAgeFolder(TestSaFolder);
+                return;
+            }
+            if (Auto && TestInstall && !testInstalled && !restarting && UpdateWanted)
+            {
+                testInstalled = true;
+                autoCloseAfterUpdate = true;
+                AppendLog("[тест: нажата «" + btnUpdate.Text + "»]", LogKind.Muted);
+                await InstallOrUpdate();
+                return;
+            }
+            await OfferSelfUpdate();
+            if (Auto && !restarting && guideLocal == null && guideRel != null) await OpenGuide();   // tests: the download path of «Гайд»
+            else if (Auto && !restarting) CloseLater();
         }
 
         /// <summary>
@@ -542,21 +534,22 @@ namespace Paranoidal
                 return;
             }
             var known = guideRel;
-            RunOp(async () =>
+            var r = await Task.Run(async () =>
             {
                 Stage("Скачиваю гайд по сборке…", "Downloading the modpack guide…");
                 Progress(null, "");
-                var r = known ?? await Releases.LatestAsync(AppInfo.GuideRepo, "guide", AppInfo.GuideFile, ct: OpToken);
-                return await InstallGuideAsync(r);
-            }, r =>
-            {
-                guideRel = r;
-                Idle(Tr.T("Гайд по сборке скачан", "The modpack guide is downloaded"));
-                lblDetail.Text = guideLocal;
-                AppendLogHighlight("Скачан гайд по сборке Paranoidal " + r.Version + ": " + guideLocal);
-                if (Auto) { CloseLater(); return; }
-                try { GuideFile.Open(guideLocal); } catch { }
+                var release = known ?? await Releases.LatestAsync(AppInfo.GuideRepo, "guide", AppInfo.GuideFile, ct: OpToken);
+                return await InstallGuideAsync(release);
             });
+            await FlushProgress();
+            if (closed) return;
+            RefreshGuideLocal();
+            guideRel = r;
+            Idle(Tr.T("Гайд по сборке скачан", "The modpack guide is downloaded"));
+            lblDetail.Text = guideLocal;
+            AppendLogHighlight("Скачан гайд по сборке Paranoidal " + r.Version + ": " + guideLocal);
+            if (Auto) { CloseLater(); return; }
+            try { GuideFile.Open(guideLocal); } catch { }
         }
 
         /// <summary>Inside an operation: downloads the guide of the release with progress; returns it.</summary>
@@ -599,7 +592,7 @@ namespace Paranoidal
         {
             var r = launcherRel;
             if (r == null || restarting || Releases.Compare(r.Version, AppInfo.Version) <= 0) return;
-            if (busy || gameRunning)
+            if (gameRunning)
             {
                 if (!selfUpdatePending) AppendLog("Вышла новая версия лаунчера " + r.Version + ": предложу обновиться после выхода из игры.", LogKind.Info);
                 selfUpdatePending = true;
@@ -612,15 +605,15 @@ namespace Paranoidal
                 AppendLog("Обновление лаунчера отложено: лаунчер спросит снова при следующем запуске.", LogKind.Muted);
                 return;
             }
-            DoSelfUpdate(r);
+            await DoSelfUpdate(r);
         }
 
-        void DoSelfUpdate(ReleaseInfo r)
+        async Task DoSelfUpdate(ReleaseInfo r)
         {
             var exe = SelfUpdate.CurrentExe;
             bool direct = AppInfo.ExeDirWritable;
             var file = direct ? exe + SelfUpdate.NewSuffix : Path.Combine(Path.GetTempPath(), "ParanoidalLauncher-" + r.Version + ".exe");
-            RunOp(async () =>
+            await Task.Run(async () =>
             {
                 Stage("Скачиваю лаунчер " + r.Version + "…", "Downloading launcher " + r.Version + "…");
                 CanCancel(true);
@@ -634,9 +627,10 @@ namespace Paranoidal
                     throw new SyncException("Скачанный лаунчер имеет версию " + (v ?? "?") + ", ожидалась " + r.Version + ".",
                         "The downloaded launcher has version " + (v ?? "?") + ", expected " + r.Version + ".");
                 }
-                return true;
-            }, async _ =>
-            {
+            });
+            await FlushProgress();
+            if (closed) return;
+            CanCancel(false);
                 try
                 {
                     if (direct) SelfUpdate.Swap(file, exe);
@@ -664,7 +658,6 @@ namespace Paranoidal
                     await DarkDialog.Info(this, Tr.T("Обновление лаунчера", "Launcher update"), Tr.T("Не удалось заменить лаунчер: ", "Could not replace the launcher: ") + ex.Message +
                         Tr.T("\nСкачайте новую версию вручную: ", "\nDownload the new version by hand: ") + Releases.PageUrl(AppInfo.LauncherRepo), Gui.Red);
                 }
-            });
         }
 
         // ------------------------------------------------------------------ Paranoidal 2.1 and Space Age (GameProfile)
@@ -675,13 +668,13 @@ namespace Paranoidal
         /// </summary>
         async Task SwitchLine(BuildLine to)
         {
-            if (busy || engine == null || fac == null || to == Lines.Current) return;
+            if (engine == null || fac == null || to == Lines.Current) return;
             if (FactorioInfo.IsRunning())
             {
                 await DarkDialog.Info(this, Tr.T("Factorio запущена", "Factorio is running"), Tr.T("Закройте игру и переключите сборку снова.", "Close the game and switch the build again."), Gui.Orange);
                 return;
             }
-            ApplyLine(to);   // nothing is installed or updated until the player presses «Установить»/«Обновить»
+            await ApplyLine(to);   // nothing is installed or updated until the player presses «Установить»/«Обновить»
         }
 
         /// <summary>
@@ -690,8 +683,8 @@ namespace Paranoidal
         /// </summary>
         async Task InstallOrUpdate()
         {
-            if (busy || engine == null) return;
-            if (Lines.Current.SpaceAge && fac != null && !GameProfile.SpaceAgeExists(fac)) { PrepareSpaceAge(); return; }
+            if (engine == null) return;
+            if (Lines.Current.SpaceAge && fac != null && !GameProfile.SpaceAgeExists(fac)) { await PrepareSpaceAge(); return; }
             await DoUpdate(false, null);
         }
 
@@ -700,19 +693,21 @@ namespace Paranoidal
         /// disk space; after «Установить Space Age» the profile is created and the Space Age build is installed. «Назад»
         /// changes nothing.
         /// </summary>
-        void PrepareSpaceAge()
+        async Task PrepareSpaceAge()
         {
+            OpToken.ThrowIfCancellationRequested();
             var f = fac;
             var mainMods = GameProfile.MainMods(f);
-            RunOp(async () =>
+            var plan = await Task.Run(async () =>
             {
                 Stage("Готовлю профиль Space Age…", "Preparing the Space Age profile…");
                 Progress(null, "");
                 HashSet<string> entries = null;
                 try { if (mainMods != null && Directory.Exists(mainMods)) entries = await engine.BuildEntriesAsync(new SyncPaths(mainMods)); } catch { }
                 return GameProfile.PlanSpaceAge(f, GameProfile.Of(f, Lines.L21), mainMods, entries);
-            }, async plan =>
-            {
+            });
+            await FlushProgress();
+            if (closed) return;
                 Idle(mainShown ? StatusIdleText() : "");
                 if (plan.Error != null)
                 {
@@ -728,25 +723,27 @@ namespace Paranoidal
                     AppendLog("Установка Paranoidal 2.1 Space Age отменена.", LogKind.Muted);
                     return;
                 }
-                RunOpSync(() =>
+                OpToken.ThrowIfCancellationRequested();
+                cancelable = false;
+                btnCancel.IsEnabled = false;
+                var seeded = await Task.Run(() =>
                 {
                     Stage("Создаю профиль Space Age…", "Creating the Space Age profile…");
                     Progress(0, "");
                     return GameProfile.CreateSpaceAge(plan, saves.Value, (fr, d) => Progress(fr, d), l => Log("Профиль Space Age: " + l + ".", LogKind.Muted));
-                }, async seeded =>
-                {
+                });
+                await FlushProgress();
+                if (closed) return;
                     // the profile is there: the Space Age build is installed into it (the copied 2.1 build is its base)
                     seeding = seeded != null && seeded.Count > 0 ? seeded : null;
                     modsDir = LineMods(fac) ?? modsDir;
                     UpdateUi();
                     AppendLog("Устанавливаю сборку " + Lines.SA.Name + ", скачается только разница с её основой.", LogKind.Info);
                     await DoUpdate(false, null);
-                });
-            });
         }
 
         /// <summary>The window serves the other line now: its mods folder, its pin, its texts; the status check of its build.</summary>
-        void ApplyLine(BuildLine to)
+        async Task ApplyLine(BuildLine to)
         {
             var from = Lines.Current;
             Lines.Set(to);
@@ -772,8 +769,8 @@ namespace Paranoidal
             root.InvalidateVisual();
             gameRunning = FactorioInfo.IsRunning();
             gameWatch.Start();
-            if (!gameRunning) AnalyzeLoad();
-            CheckStatus();
+            if (!gameRunning) await AnalyzeLoad();
+            await CheckStatus();
         }
 
         /// <summary>

@@ -147,6 +147,11 @@ namespace Paranoidal
             Report.Input result = null;
             ok.Click += async () =>
             {
+                try { await CreateReport(); }
+                catch (Exception ex) { Program.Crash(ex, true); }
+            };
+            async Task CreateReport()
+            {
                 var inp = new Report.Input { Save = Report.SaveChoice.None };
                 if (chk.Checked)
                 {
@@ -177,7 +182,7 @@ namespace Paranoidal
                 }
                 result = inp;
                 fr.F.Finish(DialogResult.OK);
-            };
+            }
             await Show(fr.F, owner);
             return result;
         }
