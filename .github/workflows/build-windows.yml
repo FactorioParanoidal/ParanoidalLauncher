@@ -1,0 +1,120 @@
+# Windows build of every push and pull request: the self-contained single-file exe as a workflow artifact.
+# Only builds and checks; never tags, releases or uploads anywhere else (releases: AGENTS.md §3).
+# Checks the 1.5.0 build.ps1 made, until they move into MSBuild targets (AGENTS.md §8): version format, CHANGELOG
+# starts with the version, MinGit SHA-256, the exe's version resource. Plus the LoadDiag self-test on Windows.
+name: Windows build
+
+on:
+  push:
+    branches: ['**']
+    tags-ignore: ['**']
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: windows-build-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  DOTNET_CLI_TELEMETRY_OPTOUT: '1'
+  DOTNET_NOLOGO: '1'
+  DOTNET_SKIP_FIRST_TIME_EXPERIENCE: '1'
+  AVALONIA_TELEMETRY_OPTOUT: '1'
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Check version, CHANGELOG and MinGit
+        id: meta
+        run: |
+          $appInfo = Get-Content src/AppInfo.cs -Raw -Encoding UTF8
+          function Get-Const($name) {
+            $m = [regex]::Match($appInfo, "const\s+string\s+$name\s*=\s*""([^""]*)""")
+            if (-not $m.Success) { throw "AppInfo.$name not found in src/AppInfo.cs" }
+            $m.Groups[1].Value
+          }
+          $version = Get-Const 'Version'
+          if ($version -notmatch '^\d+\.\d+\.\d+$') { throw "AppInfo.Version must look like 1.2.3, got '$version'" }
+
+          $top = Select-String -Path CHANGELOG.md -Pattern '^## (\S+)' -Encoding UTF8 | Select-Object -First 1
+          if (-not $top -or $top.Matches[0].Groups[1].Value -ne $version) {
+            throw "CHANGELOG.md must start with a section '## $version' (the version from src/AppInfo.cs)"
+          }
+
+          $minGit = 'vendor/MinGit-' + (Get-Const 'MinGitVersion') + '-bit.zip'
+          if (-not (Test-Path $minGit)) { throw "MinGit not found: $minGit" }
+          $readme = Get-Content vendor/README.md -Raw -Encoding UTF8
+          $expected = [regex]::Match($readme, 'SHA-256 `([0-9a-f]{64})`').Groups[1].Value
+          if (-not $expected) { throw 'SHA-256 of MinGit not found in vendor/README.md' }
+          $actual = (Get-FileHash $minGit -Algorithm SHA256).Hash.ToLower()
+          if ($actual -ne $expected) { throw "MinGit checksum mismatch: $actual, expected $expected (vendor/README.md)" }
+
+          $short = $env:GITHUB_SHA.Substring(0, 7)
+          "version=$version" >> $env:GITHUB_OUTPUT
+          "short=$short" >> $env:GITHUB_OUTPUT
+          Write-Host "Version $version, commit $short, MinGit OK"
+
+      - name: Publish win-x64 exe
+        run: dotnet publish src/ParanoidalLauncher.csproj -c Release -r win-x64 -o dist/win-x64
+
+      - name: Check the exe
+        id: exe
+        run: |
+          $version = '${{ steps.meta.outputs.version }}'
+          $exe = 'dist/win-x64/ParanoidalLauncher.exe'
+          if (-not (Test-Path $exe)) { throw "$exe was not produced" }
+          $fv = [Diagnostics.FileVersionInfo]::GetVersionInfo((Resolve-Path $exe))
+          if ($fv.FileVersion -ne "$version.0" -or $fv.ProductVersion -ne $version) {
+            throw "exe version is '$($fv.FileVersion)' / '$($fv.ProductVersion)', expected '$version.0' / '$version'"
+          }
+          $sha = (Get-FileHash $exe -Algorithm SHA256).Hash.ToLower()
+          $size = (Get-Item $exe).Length
+          New-Item -ItemType Directory -Force out | Out-Null
+          Copy-Item $exe out/
+          @(
+            "version=$version"
+            "commit=$env:GITHUB_SHA"
+            "ref=$env:GITHUB_REF_NAME"
+            "exe_size=$size"
+            "exe_sha256=$sha"
+            "built=$((Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ'))"
+            "run=$env:GITHUB_SERVER_URL/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID"
+          ) | Set-Content out/build-info.txt -Encoding utf8
+          Get-Content out/build-info.txt
+          "### ParanoidalLauncher.exe $version ($('{0:N1}' -f ($size / 1MB)) MB)`n`nSHA-256 ``$sha``" >> $env:GITHUB_STEP_SUMMARY
+
+      - name: Build Harness and UiShot
+        run: |
+          dotnet build tools/Harness -c Release
+          dotnet build tools/UiShot -c Release
+
+      - name: LoadDiag self-test
+        env:
+          PARANOIDAL_LAUNCHER_DATA_DIR: ${{ runner.temp }}/pl-data
+          PARANOIDAL_LAUNCHER_TEST_GAMES: '-'
+          PARANOIDAL_LAUNCHER_TEST_OFFLINE: '1'
+        run: |
+          $out = & tools/Harness/bin/Release/net10.0/Harness.exe --loaddiag-selftest tools/testdata/load-logs-2.0.77.zip 2>&1 | Out-String
+          Write-Host $out
+          if ($out -notmatch 'SELFTEST OK') { throw 'LoadDiag self-test failed' }
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ParanoidalLauncher-${{ steps.meta.outputs.version }}-${{ steps.meta.outputs.short }}
+          path: out/
+          if-no-files-found: error
+          retention-days: 30

@@ -64,6 +64,7 @@ these documents are in English; texts players see are RU/EN; `README.md` and `CH
 | `tools/Harness/` | console driver of the engine (`Harness.cs`, usage at its top); references the launcher project |
 | `tools/UiShot/` | dialogs, start views and the main window rendered to PNG by Avalonia.Headless + Skia (no window on the desktop); references the launcher project |
 | `tools/testdata/`, `tools/release-manifest.ps1` | reference logs; release.json writer (PowerShell) |
+| `.github/workflows/build-windows.yml` | CI: every push and pull request publishes the win-x64 exe on a Windows runner, runs the `build.ps1` checks (version, CHANGELOG, MinGit SHA-256, version resource) and the LoadDiag self-test, uploads the exe + `build-info.txt` as a workflow artifact (30 days); never releases |
 | `build.ps1`, `publish.ps1`, `tools/snap.ps1` | the 1.5.0 build and release scripts (csc, .NET Framework 4.8): obsolete for the new stack, replaced in the port (§3, §8) |
 | `docs/factorio-load-cache.md` | measured behaviour of the 2.0.77 load cache: the basis of `LoadDiag` and `GameConfig` |
 | `assets/` | `paranoidal-logo.gif` (animated logo), `space-age-plate.png` (from the game's Space Age logo), `gear.png`, `app.ico`; embedded by the csproj |
@@ -85,7 +86,7 @@ these documents are in English; texts players see are RU/EN; `README.md` and `CH
   - Linux: `-r linux-x64` (packaging is §8).
 - The checks `build.ps1` made for 1.5.0 (version format, CHANGELOG starts with the version, MinGit SHA-256, one
   version = one exe via `dist/build-info.txt`) move into MSBuild targets of the csproj (§8). Until then check them by
-  hand before giving an exe to anyone. Whether `dotnet publish` single-file output is byte-for-byte reproducible is not
+  hand before giving an exe to anyone; the CI workflow (`.github/workflows/build-windows.yml`) runs them on every push. Whether `dotnet publish` single-file output is byte-for-byte reproducible is not
   verified yet.
 - `dist/`, `obj/`, `bin/` are not in Git. A release = a GitHub Release `vX.Y.Z` with `ParanoidalLauncher.exe` and
   `release.json` (version, size, SHA-256, every CHANGELOG section; format in README «Где лаунчер ищет обновления»),
