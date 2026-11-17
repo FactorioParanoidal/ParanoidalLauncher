@@ -3,12 +3,12 @@ using System.Collections;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
-using System.Net;
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.Json;
 using System.Text.RegularExpressions;
+using System.Threading;
 using System.Threading.Tasks;
-using System.Web.Script.Serialization;
 
 namespace Paranoidal
 {
@@ -65,9 +65,6 @@ namespace Paranoidal
         /// <summary>Release page for a person (a browser), always the real GitHub.</summary>
         public static string PageUrl(string repo) => "https://github.com/" + AppInfo.Owner + "/" + repo + "/releases/latest";
 
-        /// <summary>Set by «Отмена»: a running download stops with OperationCanceledException.</summary>
-        public static volatile bool Cancel;
-
         public static bool IsVersion(string v) => v != null && Regex.IsMatch(v, @"^\d+\.\d+\.\d+$");
 
         /// <summary>Compares x.y.z versions numerically; an invalid or missing version is the lowest.</summary>
@@ -87,115 +84,109 @@ namespace Paranoidal
             try { return v.Split('.').Select(int.Parse).ToArray(); } catch { return null; }
         }
 
-        static HttpWebRequest Request(string url, int timeoutMs)
+        static Exception Describe(HttpFailure ex, string what)
         {
-            var req = (HttpWebRequest)WebRequest.Create(url);
-            req.UserAgent = "ParanoidalLauncher/" + AppInfo.Version;
-            req.AutomaticDecompression = DecompressionMethods.GZip | DecompressionMethods.Deflate;
-            req.Timeout = timeoutMs;
-            req.ReadWriteTimeout = timeoutMs;
-            req.AllowAutoRedirect = true;
-            return req;
-        }
-
-        static Exception Describe(WebException ex, string what)
-        {
-            var hr = ex.Response as HttpWebResponse;
-            if (hr != null && (int)hr.StatusCode == 404) return new Exception(what + ": на GitHub нет такого файла (релиз ещё не опубликован)");
-            if (hr != null && ((int)hr.StatusCode == 403 || (int)hr.StatusCode == 429)) return new Exception(what + ": GitHub временно ограничил запросы");
-            if (hr != null) return new Exception(what + ": HTTP " + (int)hr.StatusCode);
+            if (ex.Status == 404) return new Exception(what + ": на GitHub нет такого файла (релиз ещё не опубликован)");
+            if (ex.Limited) return new Exception(what + ": GitHub временно ограничил запросы");
             return new Exception(what + ": " + ex.Message);
         }
 
         /// <summary>release.json of the latest release of a repository; checks that it describes the expected file.</summary>
-        public static ReleaseInfo Latest(string repo, string product, string file, int timeoutMs = 15000)
+        public static async Task<ReleaseInfo> LatestAsync(string repo, string product, string file, int timeoutMs = 15000, CancellationToken ct = default)
         {
             if (AppInfo.TestOffline) throw new Exception("нет связи (PARANOIDAL_LAUNCHER_TEST_OFFLINE)");
             string text;
-            try
-            {
-                using (var resp = (HttpWebResponse)Request(LatestUrl(repo, Manifest), timeoutMs).GetResponse())
-                using (var r = new StreamReader(resp.GetResponseStream(), Encoding.UTF8))
-                {
-                    var buf = new char[1 << 20];   // a manifest is a few KB; never read an endless answer
-                    int n = r.ReadBlock(buf, 0, buf.Length);
-                    text = new string(buf, 0, n);
-                }
-            }
-            catch (WebException ex) { throw Describe(ex, repo + "/" + Manifest); }
+            // a manifest is a few KB; never read an endless answer
+            try { text = await Http.GetTextAsync(LatestUrl(repo, Manifest), timeoutMs, 1 << 20, null, ct).ConfigureAwait(false); }
+            catch (HttpFailure ex) { throw Describe(ex, repo + "/" + Manifest); }
             return ParseManifest(text, repo, product, file);
         }
 
+        /// <summary>release.json as written by tools/release-manifest.ps1 (README «Где лаунчер ищет обновления»).</summary>
+        sealed class ManifestJson
+        {
+            public int? Schema { get; set; }
+            public string Product { get; set; }
+            public string Version { get; set; }
+            public string Date { get; set; }
+            public string File { get; set; }
+            public long Size { get; set; }
+            public string Sha256 { get; set; }
+            public List<ManifestChange> Changes { get; set; }
+        }
+
+        sealed class ManifestChange { public string Version { get; set; } public string Date { get; set; } public string Text { get; set; } }
+
+        // camelCase names; numbers may come as strings
+        static readonly JsonSerializerOptions JsonOptions = new JsonSerializerOptions(JsonSerializerDefaults.Web);
+
         public static ReleaseInfo ParseManifest(string text, string repo, string product, string file)
         {
-            var d = new JavaScriptSerializer().DeserializeObject(text) as IDictionary<string, object>;
+            ManifestJson d;
+            try { d = JsonSerializer.Deserialize<ManifestJson>(text ?? "", JsonOptions); }
+            catch (JsonException ex) { throw new Exception(repo + "/" + Manifest + ": не JSON (" + ex.Message + ")"); }
             if (d == null) throw new Exception(repo + "/" + Manifest + ": не JSON");
-            Func<string, string> S = k => { object o; return d.TryGetValue(k, out o) && o != null ? Convert.ToString(o, System.Globalization.CultureInfo.InvariantCulture) : null; };
             var info = new ReleaseInfo
             {
                 Repo = repo,
-                Product = S("product"),
-                Version = S("version"),
-                Date = S("date") ?? "",
-                File = S("file"),
-                Sha256 = (S("sha256") ?? "").ToLowerInvariant(),
+                Product = d.Product,
+                Version = d.Version,
+                Date = d.Date ?? "",
+                File = d.File,
+                Sha256 = (d.Sha256 ?? "").ToLowerInvariant(),
+                Size = d.Size,
             };
-            long size;
-            long.TryParse(S("size"), out size);
-            info.Size = size;
-            if (S("schema") != "1") throw new Exception(repo + "/" + Manifest + ": неизвестный формат schema=" + S("schema"));
+            if (d.Schema != 1) throw new Exception(repo + "/" + Manifest + ": неизвестный формат schema=" + d.Schema);
             if (info.Product != product || info.File != file) throw new Exception(repo + "/" + Manifest + ": описан другой файл (" + info.Product + ", " + info.File + ")");
             if (!IsVersion(info.Version)) throw new Exception(repo + "/" + Manifest + ": неверная версия «" + info.Version + "»");
             if (!Regex.IsMatch(info.Sha256, "^[0-9a-f]{64}$") || info.Size <= 0) throw new Exception(repo + "/" + Manifest + ": нет размера или SHA-256 файла");
-            object ch;
-            if (d.TryGetValue("changes", out ch) && ch is IEnumerable)
-                foreach (var o in (IEnumerable)ch)
-                {
-                    var c = o as IDictionary<string, object>;
-                    if (c == null) continue;
-                    object v, dt, t;
-                    c.TryGetValue("version", out v);
-                    c.TryGetValue("date", out dt);
-                    c.TryGetValue("text", out t);
-                    if (IsVersion(v as string)) info.Changes.Add(new ReleaseChange { Version = (string)v, Date = dt as string ?? "", Text = t as string ?? "" });
-                }
+            if (d.Changes != null)
+                foreach (var c in d.Changes)
+                    if (c != null && IsVersion(c.Version)) info.Changes.Add(new ReleaseChange { Version = c.Version, Date = c.Date ?? "", Text = c.Text ?? "" });
             return info;
         }
 
         /// <summary>The launcher's and the guide's latest releases, both at once (called next to the build check).</summary>
-        public static ReleaseCheck CheckAll()
+        public static async Task<ReleaseCheck> CheckAllAsync(CancellationToken ct = default)
         {
             var res = new ReleaseCheck();
-            var tl = Task.Run(() => Latest(AppInfo.LauncherRepo, "launcher", AppInfo.ExeName));
-            var tg = Task.Run(() => Latest(AppInfo.GuideRepo, "guide", AppInfo.GuideFile));
-            try { res.Launcher = tl.Result; } catch (Exception ex) { res.LauncherError = ex.GetBaseException().Message; }
-            try { res.Guide = tg.Result; } catch (Exception ex) { res.GuideError = ex.GetBaseException().Message; }
+            var tl = LatestAsync(AppInfo.LauncherRepo, "launcher", AppInfo.ExeName, ct: ct);
+            var tg = LatestAsync(AppInfo.GuideRepo, "guide", AppInfo.GuideFile, ct: ct);
+            try { res.Launcher = await tl.ConfigureAwait(false); } catch (Exception ex) { res.LauncherError = ex.GetBaseException().Message; }
+            try { res.Guide = await tg.ConfigureAwait(false); } catch (Exception ex) { res.GuideError = ex.GetBaseException().Message; }
             return res;
         }
 
         /// <summary>
         /// Downloads the release file to `target` through target.download, checks its size and SHA-256 and only then
-        /// replaces `target`. progress(bytes, total) is called from this thread.
+        /// replaces `target`. progress(bytes, total) is called on the thread of the download; `ct` stops it with
+        /// OperationCanceledException. Each read waits at most 30 s.
         /// </summary>
-        public static void Download(ReleaseInfo r, string target, Action<long, long> progress)
+        public static async Task DownloadAsync(ReleaseInfo r, string target, Action<long, long> progress, CancellationToken ct = default)
         {
             if (AppInfo.TestOffline) throw new Exception("нет связи (PARANOIDAL_LAUNCHER_TEST_OFFLINE)");
+            const int ReadTimeout = 30000;
             var tmp = target + ".download";
             try
             {
-                using (var resp = (HttpWebResponse)Request(r.FileUrl, 30000).GetResponse())
-                using (var s = resp.GetResponseStream())
-                using (var fs = new FileStream(tmp, FileMode.Create, FileAccess.Write, FileShare.None))
+                using (var limit = Http.Limit(ReadTimeout, ct))
+                using (var resp = await Http.GetAsync(r.FileUrl, null, limit, ct).ConfigureAwait(false))
+                using (var s = await resp.Content.ReadAsStreamAsync(limit.Token).ConfigureAwait(false))
+                using (var fs = new FileStream(tmp, FileMode.Create, FileAccess.Write, FileShare.None, 81920, true))
                 using (var sha = SHA256.Create())
                 {
                     var buf = new byte[81920];
                     long done = 0;
                     int n;
                     var last = DateTime.MinValue;
-                    while ((n = s.Read(buf, 0, buf.Length)) > 0)
+                    while (true)
                     {
-                        if (Cancel) throw new OperationCanceledException();
-                        fs.Write(buf, 0, n);
+                        limit.CancelAfter(ReadTimeout);
+                        try { n = await s.ReadAsync(buf.AsMemory(), limit.Token).ConfigureAwait(false); }
+                        catch (Exception ex) { throw Http.Translate(ex, ct); }
+                        if (n == 0) break;
+                        ct.ThrowIfCancellationRequested();
+                        await fs.WriteAsync(buf.AsMemory(0, n), ct).ConfigureAwait(false);
                         sha.TransformBlock(buf, 0, n, null, 0);
                         done += n;
                         if (done > r.Size) throw new Exception(r.File + ": файл больше, чем указано в релизе");
@@ -210,7 +201,7 @@ namespace Paranoidal
                 if (File.Exists(target)) File.Delete(target);
                 File.Move(tmp, target);
             }
-            catch (WebException ex) { TryDelete(tmp); throw Describe(ex, r.File); }
+            catch (HttpFailure ex) { TryDelete(tmp); throw Describe(ex, r.File); }
             catch { TryDelete(tmp); throw; }
         }
 

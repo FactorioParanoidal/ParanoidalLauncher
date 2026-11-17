@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Text;
+using System.Threading.Tasks;
 
 namespace Paranoidal
 {
@@ -82,20 +83,20 @@ namespace Paranoidal
         /// the game was last started with: if OLD was never played (two updates in a row), the slot keeps leading to the
         /// earlier version and only adds the files it does not have yet.
         /// </summary>
-        RollbackSlot SaveForRollback(SyncPaths p, string OLD, string NEW, HashSet<string> localEdits)
+        async Task<RollbackSlot> SaveForRollbackAsync(SyncPaths p, string OLD, string NEW, HashSet<string> localEdits)
         {
             try
             {
                 var played = p.ReadPlayed();
                 var slot = ReadSlot(RbDir(p));
-                bool fresh = slot == null || slot.Cur != OLD || slot.Target == NEW || played == OLD || !CommitExists(slot.Target);
+                bool fresh = slot == null || slot.Cur != OLD || slot.Target == NEW || played == OLD || !await CommitExistsAsync(slot.Target);
                 if (fresh)
                 {
                     if (Directory.Exists(RbNewDir(p))) FsUtil.DeleteDir(RbNewDir(p));
                     slot = new RollbackSlot { Target = OLD, Dir = RbNewDir(p) };
                 }
                 var known = new HashSet<string>(slot.Saved.Concat(slot.Added).Concat(slot.Missing), StringComparer.Ordinal);
-                var r = git.Run(new[] { "diff", "--no-renames", "--name-status", "-z", OLD, NEW, "--", "mods" });
+                var r = await git.RunAsync(new[] { "diff", "--no-renames", "--name-status", "-z", OLD, NEW, "--", "mods" });
                 if (r.Code != 0) { ui.Log("Откат к прошлой версии будет недоступен: " + r.LastErrorLine(), LogKind.Warn); return null; }
                 Stage("Сохраняю файлы текущей версии для отката…", "Keeping the current files for a rollback…");
                 ui.Progress(null, "");
@@ -151,20 +152,20 @@ namespace Paranoidal
             try { if (Directory.Exists(RbNewDir(p))) FsUtil.DeleteDir(RbNewDir(p)); } catch { }
         }
 
-        void ReadRollback(SyncPaths p, StatusInfo st)
+        async Task ReadRollbackAsync(SyncPaths p, StatusInfo st)
         {
             var slot = ReadSlot(RbDir(p));
-            if (slot == null || slot.Cur != st.Installed || !CommitExists(slot.Target)) return;
+            if (slot == null || slot.Cur != st.Installed || !await CommitExistsAsync(slot.Target)) return;
             st.RollbackTarget = slot.Target;
-            st.RollbackDate = CommitDate(slot.Target);
-            st.RollbackIsNewer = CommitTime(slot.Target) > CommitTime(st.Installed);
+            st.RollbackDate = await CommitDateAsync(slot.Target);
+            st.RollbackIsNewer = await CommitTimeAsync(slot.Target) > await CommitTimeAsync(st.Installed);
         }
 
         /// <summary>
         /// Switches mods\ to the slot's version without internet. The files it replaces are kept in a new slot, so the way
         /// back is one click as well. Files changed by hand before the update could not be kept: «Проверить файлы» restores them.
         /// </summary>
-        public UpdateResult Rollback(SyncPaths p)
+        public async Task<UpdateResult> RollbackAsync(SyncPaths p)
         {
             git.ResetCancel();
             ui.CanCancel(false);
@@ -172,12 +173,13 @@ namespace Paranoidal
             Bind(p);
             var cur = p.ReadSynced();
             var slot = ReadSlot(RbDir(p));
-            if (slot == null || cur == null || slot.Cur != cur || !CommitExists(slot.Target))
+            if (slot == null || cur == null || slot.Cur != cur || !await CommitExistsAsync(slot.Target))
                 throw new SyncException("Откат недоступен: нет сохранённых файлов прошлой версии для установленной сейчас версии.",
                     "Rollback is not available: there are no saved files of the previous version for the installed one.");
-            bool newer = CommitTime(slot.Target) > CommitTime(cur);
-            if (newer) Stage("Возвращаю версию сборки от " + CommitDate(slot.Target) + "…", "Returning to the build of " + CommitDate(slot.Target) + "…");
-            else Stage("Откатываю сборку на версию от " + CommitDate(slot.Target) + "…", "Rolling the build back to " + CommitDate(slot.Target) + "…");
+            bool newer = await CommitTimeAsync(slot.Target) > await CommitTimeAsync(cur);
+            var date = await CommitDateAsync(slot.Target);
+            if (newer) Stage("Возвращаю версию сборки от " + date + "…", "Returning to the build of " + date + "…");
+            else Stage("Откатываю сборку на версию от " + date + "…", "Rolling the build back to " + date + "…");
             ui.Progress(null, Tr.T("Не закрывайте программу.", "Do not close the launcher."));
 
             // 1. the current files, for the way back
@@ -228,13 +230,12 @@ namespace Paranoidal
             // the restored files are in the recognition index already: reset keeps their hashes and does not read them again
             try
             {
-                string tree;
-                LocalTree(p, slot.Target, out tree);
+                await LocalTreeAsync(p, slot.Target);
                 Bind(p);
                 File.Copy(FpIndex(p), Path.Combine(p.GitDir, "index"), true);
             }
             catch (Exception ex) { ui.Log("Индекс распознавания не обновлён (" + ex.Message + "), git перечитает файлы.", LogKind.Muted); Bind(p); }
-            ResetIndex(p, slot.Target);
+            await ResetIndexAsync(p, slot.Target);
             File.WriteAllText(p.SyncedFile, slot.Target + "\n");
             try
             {
@@ -245,14 +246,14 @@ namespace Paranoidal
             catch (Exception ex) { ui.Log("Обратный путь не сохранён: " + ex.Message, LogKind.Warn); }
 
             var sample = new List<string>();
-            var res = new UpdateResult { Old = cur, New = slot.Target, Mods = SummaryBetween(cur, slot.Target), Rollback = true };
-            res.NotRestored = Math.Max(0, LocalChanges(p, slot.Target, sample));
+            var res = new UpdateResult { Old = cur, New = slot.Target, Mods = await SummaryBetweenAsync(cur, slot.Target), Rollback = true };
+            res.NotRestored = Math.Max(0, await LocalChangesAsync(p, slot.Target, sample));
             ui.Log((newer ? "Возвращена версия сборки " : "Сборка откачена на версию ") + AppInfo.Short(slot.Target) + " (было " + AppInfo.Short(cur) +
                 "): возвращено файлов " + Fmt.Num(slot.Saved.Count) + ", удалено " + Fmt.Num(slot.Added.Count) + ".", LogKind.Ok);
             if (res.NotRestored > 0)
                 ui.Log("Не совпадают со сборкой файлов: " + res.NotRestored + " (" + string.Join(", ", sample.Take(5)) + (sample.Count > 5 ? " …" : "") +
                     "). Их исправит «Проверить файлы» (нужен интернет).", LogKind.Warn);
-            WriteSyncLog(p, cur, slot.Target, res);
+            await WriteSyncLogAsync(p, cur, slot.Target, res);
             return res;
         }
     }

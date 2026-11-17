@@ -5,8 +5,8 @@ using System.IO;
 using System.IO.Compression;
 using System.Linq;
 using System.Text;
+using System.Text.Json;
 using System.Text.RegularExpressions;
-using System.Web.Script.Serialization;
 
 namespace Paranoidal
 {
@@ -327,6 +327,13 @@ namespace Paranoidal
             return sb.ToString();
         }
 
+        /// <summary>The fields of a mod's info.json that TildeMods reads.</summary>
+        sealed class ModInfo
+        {
+            public string Name { get; set; }
+            public List<string> Dependencies { get; set; }
+        }
+
         /// <summary>
         /// Enabled mods with a "~" dependency. Factorio 2.0.77 never reuses the data stage cache while any enabled mod
         /// has one (it is stored in data-cache.dat as a plain required dependency, so the cache check always fails);
@@ -336,20 +343,13 @@ namespace Paranoidal
         {
             var result = new List<string>();
             if (modsDir == null || !Directory.Exists(modsDir)) return result;
-            var ser = new JavaScriptSerializer { MaxJsonLength = int.MaxValue };
             var disabled = new HashSet<string>(StringComparer.Ordinal);
             try
             {
-                var root = ser.DeserializeObject(File.ReadAllText(Path.Combine(modsDir, "mod-list.json"), Encoding.UTF8)) as IDictionary<string, object>;
-                object arr;
-                if (root != null && root.TryGetValue("mods", out arr) && arr is IEnumerable)
-                    foreach (var o in (IEnumerable)arr)
-                    {
-                        var d = o as IDictionary<string, object>;
-                        object n, en;
-                        if (d != null && d.TryGetValue("name", out n) && d.TryGetValue("enabled", out en) && en is bool && !(bool)en)
-                            disabled.Add(n as string ?? "");
-                    }
+                var list = ModList.Read(modsDir);
+                if (list != null && list.Mods != null)
+                    foreach (var m in list.Mods)
+                        if (m != null && m.Name != null && !m.Enabled) disabled.Add(m.Name);
             }
             catch { }
 
@@ -375,12 +375,9 @@ namespace Paranoidal
             {
                 try
                 {
-                    var info = ser.DeserializeObject(json) as IDictionary<string, object>;
-                    object n, deps;
-                    if (info == null || !info.TryGetValue("name", out n) || !(n is string) || disabled.Contains((string)n)) continue;
-                    if (info.TryGetValue("dependencies", out deps) && deps is IEnumerable && !(deps is string))
-                        foreach (var dep in (IEnumerable)deps)
-                            if (dep is string && ((string)dep).TrimStart().StartsWith("~")) { result.Add((string)n); break; }
+                    var info = JsonSerializer.Deserialize<ModInfo>(json, ModList.ReadOptions);
+                    if (info == null || info.Name == null || disabled.Contains(info.Name) || info.Dependencies == null) continue;
+                    if (info.Dependencies.Any(dep => dep != null && dep.TrimStart().StartsWith("~"))) result.Add(info.Name);
                 }
                 catch { }
             }

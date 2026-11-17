@@ -6,6 +6,7 @@ using System.Linq;
 using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading;
+using System.Threading.Tasks;
 
 namespace Paranoidal
 {
@@ -28,12 +29,12 @@ namespace Paranoidal
         void Progress(double? fraction, string detail);
         void CanCancel(bool value);
         /// <summary>Mods/files in the mods folder that are not in the build: true = delete them, false = keep as is.</summary>
-        bool ConfirmExtras(List<string> names);
+        Task<bool> ConfirmExtras(List<string> names);
         /// <summary>
         /// The first sync finds files of the build's mods that differ from the version being installed (a build copied
         /// by hand, an older or changed one): true = replace them with the files of that version.
         /// </summary>
-        bool ConfirmOverwrite(int files, List<string> sample, BuildFound found);
+        Task<bool> ConfirmOverwrite(int files, List<string> sample, BuildFound found);
     }
 
     sealed class ModChange
@@ -163,12 +164,6 @@ namespace Paranoidal
             git.Env.Clear();
         }
 
-        void Sleep(int ms)
-        {
-            var sw = Stopwatch.StartNew();
-            while (sw.ElapsedMilliseconds < ms) { git.ThrowIfCancelled(); Thread.Sleep(100); }
-        }
-
         void Stage(string ru, string en) => ui.Stage(ru, en);
 
         void RefuseWhileRunning(string ru, string en)
@@ -182,16 +177,16 @@ namespace Paranoidal
         /// index entry whose id changes, and objects of files are not kept: when one is missing, the index is dropped and
         /// built again from `sha` (every entry is new then, so no object is read; git hashes the files on the next refresh).
         /// </summary>
-        void ResetIndex(SyncPaths p, string sha)
+        async Task ResetIndexAsync(SyncPaths p, string sha)
         {
-            var r = git.Run(new[] { "reset", "-q", sha });
+            var r = await git.RunAsync(new[] { "reset", "-q", sha });
             if (r.Code == 0) return;
             var index = Path.Combine(p.GitDir, "index");
             if (File.Exists(index)) { File.SetAttributes(index, FileAttributes.Normal); File.Delete(index); }
-            git.Check("git reset", "reset", "-q", sha);
+            await git.CheckAsync("git reset", "reset", "-q", sha);
         }
 
-        bool CommitExists(string sha) => sha != null && git.Run(new[] { "cat-file", "-e", sha + "^{commit}" }).Code == 0;
+        async Task<bool> CommitExistsAsync(string sha) => sha != null && (await git.RunAsync(new[] { "cat-file", "-e", sha + "^{commit}" })).Code == 0;
 
         // ------------------------------------------------------------------ status
 
@@ -199,35 +194,36 @@ namespace Paranoidal
         internal static bool IsNetworkError(string err) =>
             err != null && Regex.IsMatch(err, "unable to access|Could not resolve|Failed to connect|Couldn't connect|timed out|Connection (refused|reset|was reset)|Recv failure|SSL|schannel|proxy|getaddrinfo", RegexOptions.IgnoreCase);
 
+        /// <summary>The latest commit of the branch (Head), or null with Offline (no connection) and Error (Russian).</summary>
+        public struct RemoteHeadResult { public string Head, Error; public bool Offline; }
+
         /// <summary>
         /// Latest commit of the branch, or null without a connection (Offline is set then). Gives up fast: one attempt
         /// limited to 20 s, a second one only for errors that are not about the connection.
         /// </summary>
-        public string RemoteHead(out bool offline, out string error)
+        public async Task<RemoteHeadResult> RemoteHeadAsync()
         {
             Unbind();
-            offline = false;
-            error = null;
             for (int attempt = 1; ; attempt++)
             {
                 var h = new RunHandle();
                 GitResult r;
                 using (new Timer(_ => h.Kill(), null, 20000, Timeout.Infinite))
-                    r = git.Run(new[] { "ls-remote", AppInfo.RepoUrl, "refs/heads/" + AppInfo.Branch }, null, null, null, h);
+                    r = await git.RunAsync(new[] { "ls-remote", AppInfo.RepoUrl, "refs/heads/" + AppInfo.Branch }, null, null, null, h);
                 if (r.Code == 0)
                 {
                     var t = r.Text;
-                    if (t.Length >= 40 && Regex.IsMatch(t.Substring(0, 40), "^[0-9a-f]{40}$")) return t.Substring(0, 40);
-                    error = "ветка " + AppInfo.Branch + " не найдена на GitHub";
-                    return null;
+                    if (t.Length >= 40 && Regex.IsMatch(t.Substring(0, 40), "^[0-9a-f]{40}$")) return new RemoteHeadResult { Head = t.Substring(0, 40) };
+                    return new RemoteHeadResult { Error = "ветка " + AppInfo.Branch + " не найдена на GitHub" };
                 }
-                error = h.Killed ? "GitHub не ответил за 20 с" : r.LastErrorLine();
-                if (h.Killed || IsNetworkError(r.Err) || attempt >= 2) { offline = h.Killed || IsNetworkError(r.Err); return null; }
-                Sleep(2000);
+                var error = h.Killed ? "GitHub не ответил за 20 с" : r.LastErrorLine();
+                if (h.Killed || IsNetworkError(r.Err) || attempt >= 2)
+                    return new RemoteHeadResult { Error = error, Offline = h.Killed || IsNetworkError(r.Err) };
+                await git.DelayAsync(2000);
             }
         }
 
-        public StatusInfo CheckStatus(string modsDir)
+        public async Task<StatusInfo> CheckStatusAsync(string modsDir)
         {
             git.ResetCancel();
             var st = new StatusInfo();
@@ -241,13 +237,13 @@ namespace Paranoidal
                 if (synced != null && File.Exists(Path.Combine(p.GitDir, "HEAD")))
                 {
                     Bind(p);
-                    if (CommitExists(synced))
+                    if (await CommitExistsAsync(synced))
                     {
                         st.Installed = synced;
-                        st.InstalledDate = CommitDate(synced);
+                        st.InstalledDate = await CommitDateAsync(synced);
                         Stage("Сверяю файлы сборки в папке mods…", "Checking the build files in the mods folder…");
                         ui.Progress(null, "");
-                        st.Modified = LocalChanges(p, synced, null);
+                        st.Modified = await LocalChangesAsync(p, synced, null);
                         if (st.Modified > 0) ui.Log("Файлы сборки в папке mods отличаются от установленной версии: " + st.Modified + ".", LogKind.Warn);
                     }
                 }
@@ -256,26 +252,25 @@ namespace Paranoidal
                 {
                     st.Found = st.Disk;
                     // a build of another line (2.0 on the 2.1 line) is not one of the versions this line can adopt
-                    if (st.Found.Present && !st.Found.Legacy && !st.Found.OtherLine) local = Recognize(p, st);
+                    if (st.Found.Present && !st.Found.Legacy && !st.Found.OtherLine) local = await RecognizeAsync(p, st);
                 }
             }
 
             Stage("Проверяю обновления на GitHub…", "Checking GitHub for updates…");
             ui.Progress(null, "");
-            bool offline;
-            string err;
-            st.Remote = RemoteHead(out offline, out err);
-            st.Offline = st.Remote == null && offline;
-            if (st.Remote == null) ui.Log((offline ? "Нет связи с GitHub: " : "Не удалось проверить обновления: ") + err + ".", LogKind.Warn);
+            var head = await RemoteHeadAsync();
+            st.Remote = head.Head;
+            st.Offline = st.Remote == null && head.Offline;
+            if (st.Remote == null) ui.Log((head.Offline ? "Нет связи с GitHub: " : "Не удалось проверить обновления: ") + head.Error + ".", LogKind.Warn);
 
             // still unknown: compare with the versions of the last months on GitHub (only trees, a few MB)
             if (st.Remote != null && local != null && st.Found != null && st.Found.Match == null)
             {
                 Bind(p);
-                if (FetchHistory(p)) MatchAndAdopt(p, st, local);
+                if (await FetchHistoryAsync(p)) await MatchAndAdoptAsync(p, st, local);
             }
 
-            if (p != null && st.Installed != null) { Bind(p); ReadRollback(p, st); }
+            if (p != null && st.Installed != null) { Bind(p); await ReadRollbackAsync(p, st); }
 
             if (st.Remote != null)
             {
@@ -283,15 +278,17 @@ namespace Paranoidal
                 {
                     if (st.Installed != null && st.Installed != st.Remote)
                     {
-                        try { st.Commits = GitHubApi.Compare(st.Installed, st.Remote); st.CommitsAreNew = true; }
+                        try { st.Commits = await GitHubApi.CompareAsync(st.Installed, st.Remote, git.Token); st.CommitsAreNew = true; }
+                        catch (OperationCanceledException) { throw; }
                         catch (Exception ex) { ui.Log("Не удалось сравнить версии через GitHub API: " + ex.Message, LogKind.Muted); }
                     }
                     if (st.Commits == null)
                     {
-                        st.Commits = GitHubApi.Recent(AppInfo.Branch, 20);
+                        st.Commits = await GitHubApi.RecentAsync(AppInfo.Branch, 20, git.Token);
                         CommitsCache.Save(st.Commits);
                     }
                 }
+                catch (OperationCanceledException) { throw; }
                 catch (Exception ex) { ui.Log("Список изменений недоступен: " + ex.Message, LogKind.Muted); }
             }
             if (st.Commits == null)
@@ -302,15 +299,15 @@ namespace Paranoidal
             return st;
         }
 
-        string CommitDate(string sha)
+        async Task<string> CommitDateAsync(string sha)
         {
-            var r = git.Run(new[] { "show", "-s", "--format=%ad", "--date=format:%d.%m.%Y %H:%M", sha });
+            var r = await git.RunAsync(new[] { "show", "-s", "--format=%ad", "--date=format:%d.%m.%Y %H:%M", sha });
             return r.Code == 0 && r.Text.Length > 0 ? r.Text : null;
         }
 
-        long CommitTime(string sha)
+        async Task<long> CommitTimeAsync(string sha)
         {
-            var r = git.Run(new[] { "show", "-s", "--format=%ct", sha });
+            var r = await git.RunAsync(new[] { "show", "-s", "--format=%ct", sha });
             long t;
             return r.Code == 0 && long.TryParse(r.Text, out t) ? t : 0;
         }
@@ -319,12 +316,12 @@ namespace Paranoidal
         /// Build files in mods\ that differ from commit `sha` (changed, missing, extra files inside the build's mod folders).
         /// Mods that are not in the build are not counted. `sample` gets a few paths.
         /// </summary>
-        int LocalChanges(SyncPaths p, string sha, List<string> sample, int cap = 20)
+        async Task<int> LocalChangesAsync(SyncPaths p, string sha, List<string> sample, int cap = 20)
         {
-            var build = TopLevel(sha);
+            var build = await TopLevelAsync(sha);
             if (build.Count == 0 || !File.Exists(Path.Combine(p.GitDir, "index"))) return -1;
-            git.Run(new[] { "update-index", "-q", "--refresh" });
-            var r = git.Run(new[] { "status", "--porcelain=v1", "-z", "-uall", "--no-renames", "--", "mods" });
+            await git.RunAsync(new[] { "update-index", "-q", "--refresh" });
+            var r = await git.RunAsync(new[] { "status", "--porcelain=v1", "-z", "-uall", "--no-renames", "--", "mods" });
             if (r.Code != 0) return -1;
             int n = 0;
             foreach (var e in SplitZ(r.Out))
@@ -340,14 +337,14 @@ namespace Paranoidal
         }
 
         /// <summary>Build files that differ from the installed version (for the report); null when nothing is installed.</summary>
-        public List<string> ChangedBuildFiles(SyncPaths p)
+        public async Task<List<string>> ChangedBuildFilesAsync(SyncPaths p)
         {
             var synced = p.ReadSynced();
             if (synced == null || !File.Exists(Path.Combine(p.GitDir, "HEAD"))) return null;
             git.ResetCancel();
             Bind(p);
             var list = new List<string>();
-            return LocalChanges(p, synced, list, int.MaxValue) < 0 ? null : list;
+            return await LocalChangesAsync(p, synced, list, int.MaxValue) < 0 ? null : list;
         }
 
         /// <summary>Remembers the build version the game is started with (rollback goes back to the last played one).</summary>
@@ -364,7 +361,7 @@ namespace Paranoidal
         /// verify = true: «Проверить файлы» — read every file of the installed build again, compare it byte for byte
         /// and restore what differs; the installed version stays (it is the latest one only if nothing is installed yet).
         /// </summary>
-        public UpdateResult Update(SyncPaths p, bool verify = false, string target = null)
+        public async Task<UpdateResult> UpdateAsync(SyncPaths p, bool verify = false, string target = null)
         {
             git.ResetCancel();
             ui.CanCancel(true);
@@ -372,11 +369,11 @@ namespace Paranoidal
 
             Stage("Подготовка…", "Preparing…");
             ui.Progress(null, p.Mods);
-            Prepare(p);
+            await PrepareAsync(p);
             ModList.EnsureDlc(p.Mods, (t, k) => ui.Log(t, k));
 
             var OLD = p.ReadSynced();
-            if (OLD != null && !CommitExists(OLD)) OLD = null;
+            if (OLD != null && !await CommitExistsAsync(OLD)) OLD = null;
 
             // the build moves to the launcher's line (2.0 -> 2.1): no rollback across the line, «Оставить» answers start over
             var disk = BuildFound.Scan(p.Mods);
@@ -398,14 +395,14 @@ namespace Paranoidal
             else
             {
                 Stage("Получаю с GitHub список файлов сборки…", "Getting the list of build files from GitHub…");
-                FetchWithRetry(new[] { "fetch", "--progress", "--depth", "1", "--filter=blob:none", "--no-tags", "origin", target ?? AppInfo.Branch },
+                await FetchWithRetryAsync(new[] { "fetch", "--progress", "--depth", "1", "--filter=blob:none", "--no-tags", "origin", target ?? AppInfo.Branch },
                     "Не удалось получить список файлов с GitHub", "Could not get the file list from GitHub");
-                NEW = git.Check("git rev-parse", "rev-parse", "FETCH_HEAD").Text;
+                NEW = (await git.CheckAsync("git rev-parse", "rev-parse", "FETCH_HEAD")).Text;
                 if (!Regex.IsMatch(NEW, "^[0-9a-f]{40}$")) throw new SyncException("Не удалось определить коммит сборки.", "Could not determine the build commit.");
             }
 
             // mods that are not in the build: ask before anything is downloaded (only about the player's own files)
-            HandleExtras(p, TopLevel(NEW), OLD != null ? TopLevel(OLD) : null);
+            await HandleExtrasAsync(p, await TopLevelAsync(NEW), OLD != null ? await TopLevelAsync(OLD) : null);
 
             // Full byte-for-byte check: first sync, «Проверить файлы», and a missing index (e.g. a check interrupted right
             // after the index was dropped; without an index every file would look deleted and be downloaded again).
@@ -420,7 +417,7 @@ namespace Paranoidal
                     "Git hashes the files already in the folder. This may take a couple of minutes."));
                 // the recognition index (Recognize.cs) already knows the hashes of these files: git keeps them for equal files
                 if (!File.Exists(indexFile) && File.Exists(FpIndex(p))) { try { File.Copy(FpIndex(p), indexFile); } catch { } }
-                ResetIndex(p, NEW);
+                await ResetIndexAsync(p, NEW);
             }
             else if (fullCheck)
             {
@@ -430,16 +427,16 @@ namespace Paranoidal
                     "Git reads and compares every file in the mods folder again. This may take a couple of minutes."));
                 // a new index has no cached sizes and times, so git reads every file again
                 if (File.Exists(indexFile)) { File.SetAttributes(indexFile, FileAttributes.Normal); File.Delete(indexFile); }
-                git.Check("git reset", "reset", "-q", NEW);
+                await git.CheckAsync("git reset", "reset", "-q", NEW);
             }
             else
             {
                 Stage("Сверяю файлы в папке mods…", "Checking the files in the mods folder…");
                 ui.Progress(null, "");
             }
-            git.Run(new[] { "update-index", "-q", "--refresh" });
+            await git.RunAsync(new[] { "update-index", "-q", "--refresh" });
 
-            var st = git.Check("git status", "status", "--porcelain=v1", "-z", "-uall", "--no-renames", "--", "mods");
+            var st = await git.CheckAsync("git status", "status", "--porcelain=v1", "-z", "-uall", "--no-renames", "--", "mods");
             var diffs = new List<string>();
             var localEdits = new HashSet<string>(StringComparer.Ordinal);   // build files that differ from OLD (paths "mods/…")
             int differing = 0;
@@ -462,7 +459,7 @@ namespace Paranoidal
             if (OLD == null && differing > 0 && !verify && Seeded == null)
             {
                 var found = BuildFound.Scan(p.Mods);
-                if (!ui.ConfirmOverwrite(differing, sample, found))
+                if (!await ui.ConfirmOverwrite(differing, sample, found))
                 {
                     // nothing was changed in mods\: forget the index, the next attempt starts from scratch
                     try { File.Delete(indexFile); } catch { }
@@ -475,7 +472,7 @@ namespace Paranoidal
             {
                 CleanupBlobs(p);
                 result.UpToDate = true;
-                if (fullCheck) WriteSyncLog(p, OLD, NEW, result);
+                if (fullCheck) await WriteSyncLogAsync(p, OLD, NEW, result);
                 return result;
             }
 
@@ -483,7 +480,7 @@ namespace Paranoidal
             if (diffs.Count > 0) ui.Log("Будут заменены версией сборки: " + Fmt.Num(diffs.Count) + " файл(ов)", LogKind.Muted);
 
             // which blobs of the new build are missing locally
-            var di = git.Check("git diff-index", "diff-index", "--raw", "-z", "--no-renames", "--abbrev=40", NEW, "--", "mods");
+            var di = await git.CheckAsync("git diff-index", "diff-index", "--raw", "-z", "--no-renames", "--abbrev=40", NEW, "--", "mods");
             var need = new List<string>();
             var needSet = new HashSet<string>();
             var repairedPaths = new List<string>();
@@ -504,10 +501,10 @@ namespace Paranoidal
             git.Env["GIT_ALTERNATE_OBJECT_DIRECTORIES"] = Path.Combine(p.GitDir, "objects");
             ConsolidateBlobs(p);   // packs left by an interrupted run count as already downloaded
 
-            var missing = need.Count == 0 ? new List<string>() : MissingObjects(need);
+            var missing = need.Count == 0 ? new List<string>() : await MissingObjectsAsync(need);
             if (need.Count > missing.Count)
                 ui.Log("Уже скачано в прошлый раз: " + Fmt.Num(need.Count - missing.Count) + " файлов, докачиваю остальное.", LogKind.Muted);
-            Download(p, NEW, missing, need);
+            await DownloadAsync(p, NEW, missing, need);
             result.Downloaded = need.Count;
 
             // the files this version change replaces are kept for a rollback without internet (Rollback.cs)
@@ -516,7 +513,7 @@ namespace Paranoidal
             {
                 git.Env.Remove("GIT_OBJECT_DIRECTORY");
                 git.Env.Remove("GIT_ALTERNATE_OBJECT_DIRECTORIES");
-                slot = SaveForRollback(p, OLD, NEW, localEdits);
+                slot = await SaveForRollbackAsync(p, OLD, NEW, localEdits);
                 git.Env["GIT_OBJECT_DIRECTORY"] = p.Blobs;
                 git.Env["GIT_ALTERNATE_OBJECT_DIRECTORIES"] = Path.Combine(p.GitDir, "objects");
             }
@@ -524,17 +521,17 @@ namespace Paranoidal
             ui.CanCancel(false);
             Stage("Раскладываю файлы в папке mods…", "Writing the files into the mods folder…");
             ui.Progress(null, Tr.T("Не закрывайте программу.", "Do not close the launcher."));
-            git.Check("git reset --hard", "reset", "-q", "--hard", NEW);
+            await git.CheckAsync("git reset --hard", "reset", "-q", "--hard", NEW);
             git.Env.Remove("GIT_OBJECT_DIRECTORY");
             git.Env.Remove("GIT_ALTERNATE_OBJECT_DIRECTORIES");
-            var clean = git.Check("git clean", "clean", "-fd", "--", "mods");
+            var clean = await git.CheckAsync("git clean", "clean", "-fd", "--", "mods");
             File.WriteAllText(p.SyncedFile, NEW + "\n");
             if (slot != null) CommitRollback(p, slot);
             else if (!verify && OLD != NEW) DropRollback(p);
             CleanupBlobs(p);
 
             // summary
-            if (OLD != null && OLD != NEW) result.Mods = SummaryBetween(OLD, NEW);
+            if (OLD != null && OLD != NEW) result.Mods = await SummaryBetweenAsync(OLD, NEW);
             else
             {
                 var byMod = new SortedDictionary<string, int[]>(StringComparer.OrdinalIgnoreCase);
@@ -554,7 +551,7 @@ namespace Paranoidal
                     if (kv.Value[1] > 0) result.Mods.Add(new ModChange { Mod = kv.Key, Kind = "удалены лишние файлы", KindEn = "extra files removed", Files = kv.Value[1] });
                 }
             }
-            WriteSyncLog(p, OLD, NEW, result);
+            await WriteSyncLogAsync(p, OLD, NEW, result);
             return result;
         }
 
@@ -568,13 +565,13 @@ namespace Paranoidal
             c[idx]++;
         }
 
-        void Prepare(SyncPaths p)
+        async Task PrepareAsync(SyncPaths p)
         {
             Directory.CreateDirectory(p.Mods);
             Bind(p);
             if (File.Exists(Path.Combine(p.GitDir, "HEAD")))
             {
-                var pc = git.Run(new[] { "config", "--get", "extensions.partialClone" });
+                var pc = await git.RunAsync(new[] { "config", "--get", "extensions.partialClone" });
                 if (pc.Code != 0 || pc.Text.Length == 0)
                 {
                     ui.Log("Удаляю старую полную копию репозитория от прошлой версии лаунчера (≈1,2 ГБ)…", LogKind.Warn);
@@ -583,7 +580,7 @@ namespace Paranoidal
             }
             if (!File.Exists(Path.Combine(p.GitDir, "HEAD")))
             {
-                git.Check("git init", "init", "-q", "-b", AppInfo.Branch);
+                await git.CheckAsync("git init", "init", "-q", "-b", AppInfo.Branch);
                 try { var d = new DirectoryInfo(p.GitDir); d.Attributes |= FileAttributes.Hidden; } catch { }
             }
             var cfg = new[]
@@ -610,7 +607,7 @@ namespace Paranoidal
                 "core.fsync", "none",
             };
             for (int i = 0; i < cfg.Length; i += 2)
-                git.Check("git config", "config", "--replace-all", cfg[i], cfg[i + 1]);
+                await git.CheckAsync("git config", "config", "--replace-all", cfg[i], cfg[i + 1]);
 
             var info = Path.Combine(p.GitDir, "info");
             Directory.CreateDirectory(info);
@@ -643,13 +640,13 @@ namespace Paranoidal
         static string KeptFile(SyncPaths p) => Path.Combine(p.GitDir, "kept-extras.txt");
 
         /// <summary>Top-level folders and zip files in mods\ that are not part of the installed build (null: not installed).</summary>
-        public List<string> ForeignEntries(SyncPaths p)
+        public async Task<List<string>> ForeignEntriesAsync(SyncPaths p)
         {
             var synced = p.ReadSynced();
             if (synced == null || !File.Exists(Path.Combine(p.GitDir, "HEAD")) || !Directory.Exists(p.Mods)) return null;
             git.ResetCancel();
             Bind(p);
-            var build = TopLevel(synced);
+            var build = await TopLevelAsync(synced);
             if (build.Count == 0) return null;
             var res = new List<string>();
             foreach (var full in Directory.GetFileSystemEntries(p.Mods))
@@ -710,7 +707,7 @@ namespace Paranoidal
         /// recognition): a folder with such a name came with the build, not from the player. Cached in known-mods.txt
         /// until git gets new packs.
         /// </summary>
-        HashSet<string> KnownBuildNames(SyncPaths p)
+        async Task<HashSet<string>> KnownBuildNamesAsync(SyncPaths p)
         {
             var set = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             var key = PackKey(p);
@@ -728,9 +725,9 @@ namespace Paranoidal
                 }
             }
             catch { }
-            var commits = LocalCommits();
+            var commits = await LocalCommitsAsync();
             if (commits.Count == 0) return set;
-            var check = git.Run(new[] { "cat-file", "--batch-check" }, Encoding.ASCII.GetBytes(string.Join("\n", commits.Select(c => c.Key + ":mods")) + "\n"));
+            var check = await git.RunAsync(new[] { "cat-file", "--batch-check" }, Encoding.ASCII.GetBytes(string.Join("\n", commits.Select(c => c.Key + ":mods")) + "\n"));
             if (check.Code != 0) return set;
             var ids = new List<string>();
             foreach (var line in Encoding.UTF8.GetString(check.Out).Split('\n'))
@@ -738,7 +735,7 @@ namespace Paranoidal
                 var f = line.Trim().Split(' ');
                 if (f.Length >= 2 && f[1] == "tree") ids.Add(f[0]);
             }
-            foreach (var t in ReadTrees(ids.Distinct().ToList()).Values)
+            foreach (var t in (await ReadTreesAsync(ids.Distinct().ToList())).Values)
                 foreach (var name in t.Keys) set.Add(name);
             try
             {
@@ -756,7 +753,7 @@ namespace Paranoidal
         /// of a mod that is in the build is deleted (Factorio would see the mod twice); the rest is offered for deletion,
         /// refused ones are kept as is.
         /// </summary>
-        void HandleExtras(SyncPaths p, HashSet<string> buildMods, HashSet<string> oldMods)
+        async Task HandleExtrasAsync(SyncPaths p, HashSet<string> buildMods, HashSet<string> oldMods)
         {
             if (buildMods.Count == 0 || !Directory.Exists(p.Mods)) return;
             var present = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -791,7 +788,7 @@ namespace Paranoidal
                     if (oldMods != null && oldMods.Contains(name)) { byUpdate.Add(name); continue; }
                     // the base copied for the Space Age profile (not recognised as a version): what its build does not have
                     if (Seeded != null && Seeded.Contains(name)) { stale.Add(name); continue; }
-                    if (known == null) known = KnownBuildNames(p);
+                    if (known == null) known = await KnownBuildNamesAsync(p);
                     if (known.Contains(name)) { stale.Add(name); continue; }
                 }
                 if (keptSet.Contains(name)) continue;
@@ -817,7 +814,7 @@ namespace Paranoidal
             if (ask.Count > 0)
             {
                 ask.Sort(StringComparer.OrdinalIgnoreCase);
-                if (ui.ConfirmExtras(ask.Select(n => dirs.Contains(n) ? n + "\\" : n).ToList()))
+                if (await ui.ConfirmExtras(ask.Select(n => dirs.Contains(n) ? n + "\\" : n).ToList()))
                 {
                     foreach (var name in ask)
                     {
@@ -847,7 +844,7 @@ namespace Paranoidal
         }
 
         /// <summary>Before starting the game: DLC states in mod-list.json, and the question about extra mods.</summary>
-        public void PrepareForPlay(SyncPaths p)
+        public async Task PrepareForPlayAsync(SyncPaths p)
         {
             git.ResetCancel();
             ui.CanCancel(false);
@@ -855,15 +852,15 @@ namespace Paranoidal
             var synced = p.ReadSynced();
             if (synced == null || !File.Exists(Path.Combine(p.GitDir, "HEAD"))) return;
             Bind(p);
-            HandleExtras(p, TopLevel(synced), null);
+            await HandleExtrasAsync(p, await TopLevelAsync(synced), null);
         }
 
-        void FetchWithRetry(string[] args, string failRu, string failEn)
+        async Task FetchWithRetryAsync(string[] args, string failRu, string failEn)
         {
             var delays = new[] { 3, 10, 30 };
             for (int attempt = 0; ; attempt++)
             {
-                var r = git.Run(args, null, line =>
+                var r = await git.RunAsync(args, null, line =>
                 {
                     var pr = GitProgress.Parse(line);
                     if (pr != null && pr.Phase == "Receiving objects")
@@ -876,13 +873,13 @@ namespace Paranoidal
                     throw new SyncException(failRu + ": " + r.LastErrorLine() + "\nФайлы модов не изменены, игру можно запускать. Повторите позже.",
                         failEn + ": " + r.LastErrorLine() + "\nThe mod files were not changed, and the game can be started. Try again later.");
                 ui.Log("Сбой связи (" + r.LastErrorLine() + "), повтор через " + delays[attempt] + " с…", LogKind.Warn);
-                Sleep(delays[attempt] * 1000);
+                await git.DelayAsync(delays[attempt] * 1000);
             }
         }
 
-        List<string> MissingObjects(List<string> need)
+        async Task<List<string>> MissingObjectsAsync(List<string> need)
         {
-            var r = git.Run(new[] { "cat-file", "--batch-check" }, Encoding.ASCII.GetBytes(string.Join("\n", need) + "\n"));
+            var r = await git.RunAsync(new[] { "cat-file", "--batch-check" }, Encoding.ASCII.GetBytes(string.Join("\n", need) + "\n"));
             if (r.Code != 0) return new List<string>(need);
             var res = new List<string>();
             foreach (var line in Encoding.ASCII.GetString(r.Out).Split('\n'))
@@ -961,7 +958,7 @@ namespace Paranoidal
         /// sharply is killed and requested again (a fresh request runs at full speed). Finished requests stay on disk,
         /// so a cancelled/failed update continues where it stopped.
         /// </summary>
-        void Download(SyncPaths p, string commit, List<string> missing, List<string> need)
+        async Task DownloadAsync(SyncPaths p, string commit, List<string> missing, List<string> need)
         {
             if (missing.Count == 0) return;
 
@@ -970,8 +967,9 @@ namespace Paranoidal
             {
                 Stage("Получаю размеры файлов…", "Getting file sizes…");
                 ui.Progress(null, "");
-                sizes = GitHubApi.BlobSizes(commit);
+                sizes = await GitHubApi.BlobSizesAsync(commit, git.Token);
             }
+            catch (OperationCanceledException) { throw; }
             catch (Exception ex) { ui.Log("Размеры файлов недоступны (" + ex.Message + "), порции будут примерными.", LogKind.Muted); }
             git.ThrowIfCancelled();
             Func<string, long> size = o => { long s; return sizes != null && sizes.TryGetValue(o, out s) ? s : UnknownSize; };
@@ -1006,7 +1004,7 @@ namespace Paranoidal
             string lastError = null;
             var objects = Path.Combine(p.GitDir, "objects");
 
-            var threads = new List<Thread>();
+            var workers = new List<Task>();
             for (int wi = 0; wi < nWorkers; wi++)
             {
                 int i = wi;
@@ -1018,7 +1016,7 @@ namespace Paranoidal
                     { "GIT_OBJECT_DIRECTORY", wdir },
                     { "GIT_ALTERNATE_OBJECT_DIRECTORIES", objects },
                 };
-                var t = new Thread(() =>
+                workers.Add(Task.Run(async () =>
                 {
                     while (true)
                     {
@@ -1036,7 +1034,7 @@ namespace Paranoidal
                         GitResult r;
                         try
                         {
-                            r = git.Run(new[]
+                            r = await git.RunAsync(new[]
                                 {
                                     "-c", "fetch.negotiationAlgorithm=noop", "-c", "fetch.unpackLimit=1",
                                     "fetch", "--progress", "--no-tags", "--no-write-fetch-head", "--no-auto-maintenance",
@@ -1122,19 +1120,17 @@ namespace Paranoidal
                             wait = new[] { 2, 5, 10, 20, 30 }[Math.Min(b.Fails - 1, 4)];
                         }
                         ui.Log("Обрыв загрузки (" + lastError + "), повтор через " + wait + " с.", LogKind.Warn);
-                        try { Sleep(wait * 1000); }
+                        try { await git.DelayAsync(wait * 1000); }
                         catch (OperationCanceledException) { lock (sync) stop = true; break; }
                     }
-                }) { IsBackground = true, Name = "fetch-" + i };
-                threads.Add(t);
-                t.Start();
+                }));
             }
 
             // monitor: progress, speed, watchdog
             long lastUi = -1000;
-            while (threads.Any(t => t.IsAlive))
+            while (workers.Any(t => !t.IsCompleted))
             {
-                Thread.Sleep(250);
+                await Task.Delay(250);
                 var toKill = new List<Slot>();
                 string detail;
                 double fraction;
@@ -1206,7 +1202,7 @@ namespace Paranoidal
                 foreach (var s in toKill) s.H.Kill();
                 if (detail != null) ui.Progress(fraction, detail);
             }
-            foreach (var t in threads) t.Join();
+            await Task.WhenAll(workers);
 
             ConsolidateBlobs(p);
             if (git.Cancelled) throw new OperationCanceledException();
@@ -1224,12 +1220,12 @@ namespace Paranoidal
             try { FsUtil.DeleteDir(p.Blobs); } catch { }
         }
 
-        List<ModChange> SummaryBetween(string oldSha, string newSha)
+        async Task<List<ModChange>> SummaryBetweenAsync(string oldSha, string newSha)
         {
             var list = new List<ModChange>();
-            var oldMods = TopLevel(oldSha);
-            var newMods = TopLevel(newSha);
-            var r = git.Run(new[] { "diff", "--no-renames", "--name-status", "-z", oldSha, newSha, "--", "mods" });
+            var oldMods = await TopLevelAsync(oldSha);
+            var newMods = await TopLevelAsync(newSha);
+            var r = await git.RunAsync(new[] { "diff", "--no-renames", "--name-status", "-z", oldSha, newSha, "--", "mods" });
             if (r.Code != 0) return list;
             var counts = new SortedDictionary<string, int>(StringComparer.OrdinalIgnoreCase);
             var parts = SplitZ(r.Out);
@@ -1256,25 +1252,25 @@ namespace Paranoidal
         }
 
         /// <summary>Top-level names in mods\ of the installed build (null: nothing installed by the launcher).</summary>
-        public HashSet<string> BuildEntries(SyncPaths p)
+        public async Task<HashSet<string>> BuildEntriesAsync(SyncPaths p)
         {
             var synced = p.ReadSynced();
             if (synced == null || !File.Exists(Path.Combine(p.GitDir, "HEAD"))) return null;
             git.ResetCancel();
             Bind(p);
-            var set = TopLevel(synced);
+            var set = await TopLevelAsync(synced);
             return set.Count == 0 ? null : set;
         }
 
-        HashSet<string> TopLevel(string sha)
+        async Task<HashSet<string>> TopLevelAsync(string sha)
         {
             var set = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            var r = git.Run(new[] { "ls-tree", "-z", "--name-only", sha + ":mods" });
+            var r = await git.RunAsync(new[] { "ls-tree", "-z", "--name-only", sha + ":mods" });
             if (r.Code == 0) foreach (var n in SplitZ(r.Out)) set.Add(n);
             return set;
         }
 
-        void WriteSyncLog(SyncPaths p, string oldSha, string newSha, UpdateResult res)
+        async Task WriteSyncLogAsync(SyncPaths p, string oldSha, string newSha, UpdateResult res)
         {
             try
             {
@@ -1287,7 +1283,7 @@ namespace Paranoidal
                 if (res.UpToDate) sb.Append("  все файлы совпадают со сборкой\r\n");
                 if (oldSha != null && oldSha != newSha)
                 {
-                    var r = git.Run(new[] { "diff", "--no-renames", "--name-status", "-z", oldSha, newSha, "--", "mods" });
+                    var r = await git.RunAsync(new[] { "diff", "--no-renames", "--name-status", "-z", oldSha, newSha, "--", "mods" });
                     var parts = SplitZ(r.Out);
                     for (int i = 0; i + 1 < parts.Count; i += 2) sb.Append(parts[i]).Append('\t').Append(parts[i + 1]).Append("\r\n");
                 }

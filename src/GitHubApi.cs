@@ -3,9 +3,10 @@ using System.Collections;
 using System.Collections.Generic;
 using System.Globalization;
 using System.IO;
-using System.Net;
 using System.Text;
-using System.Web.Script.Serialization;
+using System.Text.Json;
+using System.Threading;
+using System.Threading.Tasks;
 
 namespace Paranoidal
 {
@@ -20,60 +21,50 @@ namespace Paranoidal
     {
         const string Api = "https://api.github.com/repos/" + AppInfo.Owner + "/" + AppInfo.RepoName;
 
-        static object Get(string url, int timeoutMs = 20000)
+        // the parts of the REST answers the launcher reads (camelCase names, unknown fields ignored)
+        static readonly JsonSerializerOptions JsonOptions = new JsonSerializerOptions(JsonSerializerDefaults.Web);
+
+        sealed class ApiCommit { public string Sha { get; set; } public ApiCommitBody Commit { get; set; } }
+        sealed class ApiCommitBody { public string Message { get; set; } public ApiAuthor Author { get; set; } }
+        sealed class ApiAuthor { public string Name { get; set; } public DateTime? Date { get; set; } }
+        sealed class ApiCompare { public string Status { get; set; } public List<ApiCommit> Commits { get; set; } }
+        sealed class ApiTree { public List<ApiTreeItem> Tree { get; set; } }
+        sealed class ApiTreeItem { public string Type { get; set; } public string Sha { get; set; } public long? Size { get; set; } }
+
+        static async Task<T> GetAsync<T>(string url, CancellationToken ct, int timeoutMs = 20000)
         {
             if (AppInfo.TestOffline) throw new Exception("нет связи (PARANOIDAL_LAUNCHER_TEST_OFFLINE)");
-            var req = (HttpWebRequest)WebRequest.Create(url);
-            req.UserAgent = "ParanoidalLauncher/" + AppInfo.Version;
-            req.Accept = "application/vnd.github+json";
-            req.AutomaticDecompression = DecompressionMethods.GZip | DecompressionMethods.Deflate;
-            req.Timeout = timeoutMs;
-            req.ReadWriteTimeout = timeoutMs;
             try
             {
-                using (var resp = (HttpWebResponse)req.GetResponse())
-                using (var r = new StreamReader(resp.GetResponseStream(), Encoding.UTF8))
-                    return new JavaScriptSerializer { MaxJsonLength = int.MaxValue }.DeserializeObject(r.ReadToEnd());
+                return await Http.GetAsync(url, timeoutMs, "application/vnd.github+json",
+                    (s, t) => JsonSerializer.DeserializeAsync<T>(s, JsonOptions, t).AsTask(), ct).ConfigureAwait(false);
             }
-            catch (WebException ex)
-            {
-                var hr = ex.Response as HttpWebResponse;
-                if (hr != null && ((int)hr.StatusCode == 403 || (int)hr.StatusCode == 429))
-                    throw new Exception("GitHub временно ограничил запросы, попробуйте позже");
-                if (hr != null) throw new Exception("HTTP " + (int)hr.StatusCode);
-                throw new Exception(ex.Message);
-            }
+            catch (HttpFailure ex) when (ex.Limited) { throw new Exception("GitHub временно ограничил запросы, попробуйте позже"); }
         }
 
-        public static List<CommitInfo> Compare(string baseSha, string headSha)
+        public static async Task<List<CommitInfo>> CompareAsync(string baseSha, string headSha, CancellationToken ct = default)
         {
-            var d = Get(Api + "/compare/" + baseSha + "..." + headSha + "?per_page=250") as IDictionary<string, object>;
-            var list = Parse(d == null ? null : d["commits"]);
+            var d = await GetAsync<ApiCompare>(Api + "/compare/" + baseSha + "..." + headSha + "?per_page=250", ct).ConfigureAwait(false);
+            var list = Parse(d == null ? null : d.Commits);
             list.Reverse();   // newest first
             return list;
         }
 
         /// <summary>Blob id -> size for every file in mods/ of a commit (one request), used to size download batches.</summary>
-        public static Dictionary<string, long> BlobSizes(string commit)
+        public static async Task<Dictionary<string, long>> BlobSizesAsync(string commit, CancellationToken ct = default)
         {
-            var d = Get(Api + "/git/trees/" + commit + ":mods?recursive=1", 90000) as IDictionary<string, object>;
+            var d = await GetAsync<ApiTree>(Api + "/git/trees/" + commit + ":mods?recursive=1", ct, 90000).ConfigureAwait(false);
             var res = new Dictionary<string, long>();
-            var items = d == null ? null : d["tree"] as IEnumerable;
-            if (items == null) return res;
-            foreach (var o in items)
-            {
-                var e = o as IDictionary<string, object>;
-                if (e == null || !"blob".Equals(e["type"] as string)) continue;
-                object s;
-                if (e.TryGetValue("size", out s) && s != null) res[(string)e["sha"]] = Convert.ToInt64(s, CultureInfo.InvariantCulture);
-            }
+            if (d == null || d.Tree == null) return res;
+            foreach (var e in d.Tree)
+                if (e != null && e.Type == "blob" && e.Sha != null && e.Size != null) res[e.Sha] = e.Size.Value;
             return res;
         }
 
         /// <summary>A commit by its full or abbreviated id (the host's version line has 10 characters).</summary>
-        public static CommitInfo Commit(string sha)
+        public static async Task<CommitInfo> CommitAsync(string sha, CancellationToken ct = default)
         {
-            var list = Parse(new object[] { Get(Api + "/commits/" + Uri.EscapeDataString(sha)) });
+            var list = Parse(new List<ApiCommit> { await GetAsync<ApiCommit>(Api + "/commits/" + Uri.EscapeDataString(sha), ct).ConfigureAwait(false) });
             return list.Count == 1 && list[0].Sha != null ? list[0] : null;
         }
 
@@ -81,43 +72,39 @@ namespace Paranoidal
         /// The commit is in the history of the branch (the branch head or an older version of it); false also when GitHub
         /// does not know one of them. Tells a bare commit id of the main 2.1 build from one of the Space Age build.
         /// </summary>
-        public static bool InBranch(string branch, string sha)
+        public static async Task<bool> InBranchAsync(string branch, string sha, CancellationToken ct = default)
         {
             try
             {
-                var d = Get(Api + "/compare/" + Uri.EscapeDataString(branch) + "..." + Uri.EscapeDataString(sha) + "?per_page=1") as IDictionary<string, object>;
-                var status = d == null ? null : d["status"] as string;
+                var d = await GetAsync<ApiCompare>(Api + "/compare/" + Uri.EscapeDataString(branch) + "..." + Uri.EscapeDataString(sha) + "?per_page=1", ct).ConfigureAwait(false);
+                var status = d == null ? null : d.Status;
                 return status == "behind" || status == "identical";
             }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
             catch { return false; }
         }
 
-        public static List<CommitInfo> Recent(string branch, int count)
+        public static async Task<List<CommitInfo>> RecentAsync(string branch, int count, CancellationToken ct = default)
         {
-            return Parse(Get(Api + "/commits?sha=" + Uri.EscapeDataString(branch) + "&per_page=" + count));
+            return Parse(await GetAsync<List<ApiCommit>>(Api + "/commits?sha=" + Uri.EscapeDataString(branch) + "&per_page=" + count, ct).ConfigureAwait(false));
         }
 
-        static List<CommitInfo> Parse(object arr)
+        static List<CommitInfo> Parse(List<ApiCommit> items)
         {
             var list = new List<CommitInfo>();
-            var items = arr as IEnumerable;
             if (items == null) return list;
-            foreach (var o in items)
+            foreach (var c in items)
             {
-                var c = o as IDictionary<string, object>;
                 if (c == null) continue;
-                var commit = c["commit"] as IDictionary<string, object>;
-                var author = commit == null ? null : commit["author"] as IDictionary<string, object>;
-                var ci = new CommitInfo { Sha = c["sha"] as string };
-                var msg = (commit == null ? "" : commit["message"] as string) ?? "";
+                var ci = new CommitInfo { Sha = c.Sha };
+                var msg = (c.Commit == null ? null : c.Commit.Message) ?? "";
                 int nl = msg.IndexOf('\n');
                 ci.Message = (nl >= 0 ? msg.Substring(0, nl) : msg).Trim();
+                var author = c.Commit == null ? null : c.Commit.Author;
                 if (author != null)
                 {
-                    ci.Author = author["name"] as string;
-                    DateTime dt;
-                    if (DateTime.TryParse(author["date"] as string, CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind, out dt))
-                        ci.Date = dt.ToLocalTime();
+                    ci.Author = author.Name;
+                    if (author.Date != null) ci.Date = author.Date.Value.ToLocalTime();
                 }
                 list.Add(ci);
             }
@@ -135,24 +122,13 @@ namespace Paranoidal
             "https://raw.githubusercontent.com/" + AppInfo.Owner + "/" + AppInfo.RepoName + "/" + Uri.EscapeDataString(reference) + "/mods/zzzparanoidal/info.json";
 
         /// <summary>Null without a connection or when the file is not there; never throws.</summary>
-        public static BuildFound Info(string reference, int timeoutMs = 10000)
+        public static async Task<BuildFound> InfoAsync(string reference, int timeoutMs = 10000, CancellationToken ct = default)
         {
             if (AppInfo.TestOffline || string.IsNullOrEmpty(reference)) return null;
             try
             {
-                var req = (HttpWebRequest)WebRequest.Create(Url(reference));
-                req.UserAgent = "ParanoidalLauncher/" + AppInfo.Version;
-                req.AutomaticDecompression = DecompressionMethods.GZip | DecompressionMethods.Deflate;
-                req.Timeout = timeoutMs;
-                req.ReadWriteTimeout = timeoutMs;
-                string text;
-                using (var resp = (HttpWebResponse)req.GetResponse())
-                using (var r = new StreamReader(resp.GetResponseStream(), Encoding.UTF8))
-                {
-                    var buf = new char[64 * 1024];   // info.json is ~1 KB; never read an endless answer
-                    int n = r.ReadBlock(buf, 0, buf.Length);
-                    text = new string(buf, 0, n);
-                }
+                // info.json is ~1 KB; never read an endless answer
+                var text = await Http.GetTextAsync(Url(reference), timeoutMs, 64 * 1024, null, ct).ConfigureAwait(false);
                 var f = new BuildFound { Present = true };
                 BuildFound.Parse(text, f);
                 return f.FactorioVersion == null ? null : f;

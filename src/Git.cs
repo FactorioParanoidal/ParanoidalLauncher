@@ -7,6 +7,7 @@ using System.IO.Compression;
 using System.Text;
 using System.Text.RegularExpressions;
 using System.Threading;
+using System.Threading.Tasks;
 
 namespace Paranoidal
 {
@@ -46,12 +47,8 @@ namespace Paranoidal
 
         internal static void KillTree(Process p)
         {
-            try
-            {
-                using (var k = Process.Start(new ProcessStartInfo("taskkill", "/PID " + p.Id + " /T /F")
-                { CreateNoWindow = true, UseShellExecute = false }))
-                    k.WaitForExit(5000);
-            }
+            // git.exe starts git-remote-https and its helpers: the whole tree goes
+            try { p.Kill(entireProcessTree: true); p.WaitForExit(5000); }
             catch { }
         }
     }
@@ -68,6 +65,7 @@ namespace Paranoidal
         readonly object gate = new object();
         readonly HashSet<Process> running = new HashSet<Process>();
         volatile bool cancelled;
+        volatile CancellationTokenSource cts = new CancellationTokenSource();
 
         public GitRunner(string exe, string globalConfig)
         {
@@ -76,18 +74,30 @@ namespace Paranoidal
         }
 
         public bool Cancelled => cancelled;
-        public void ResetCancel() { cancelled = false; }
+        /// <summary>Cancelled by Cancel(): waits and network requests of the operation end with it.</summary>
+        public CancellationToken Token => cts.Token;
+
+        public void ResetCancel()
+        {
+            cancelled = false;
+            if (cts.IsCancellationRequested) cts = new CancellationTokenSource();
+        }
+
         public void ThrowIfCancelled() { if (cancelled) throw new OperationCanceledException(); }
+
+        /// <summary>A pause that ends early with OperationCanceledException when the operation is cancelled.</summary>
+        public Task DelayAsync(int ms) => Task.Delay(ms, Token);
 
         public void Cancel()
         {
             cancelled = true;
+            try { cts.Cancel(); } catch (ObjectDisposedException) { }
             List<Process> list;
             lock (gate) list = new List<Process>(running);
             foreach (var p in list) RunHandle.KillTree(p);
         }
 
-        public GitResult Run(string[] args, byte[] stdin = null, Action<string> onErrLine = null,
+        public async Task<GitResult> RunAsync(string[] args, byte[] stdin = null, Action<string> onErrLine = null,
             IDictionary<string, string> extraEnv = null, RunHandle handle = null)
         {
             ThrowIfCancelled();
@@ -139,52 +149,25 @@ namespace Paranoidal
             if (handle != null) handle.Attach(p);
 
             var outMs = new MemoryStream();
-            var tOut = new Thread(() => { try { p.StandardOutput.BaseStream.CopyTo(outMs); } catch { } }) { IsBackground = true };
-            tOut.Start();
-
+            var tOut = p.StandardOutput.BaseStream.CopyToAsync(outMs);
             var err = new StringBuilder();
-            var tErr = new Thread(() =>
-            {
-                var sb = new StringBuilder();
-                Action flush = () =>
-                {
-                    if (sb.Length == 0) return;
-                    var line = sb.ToString(); sb.Clear();
-                    lock (err)
-                    {
-                        err.AppendLine(line);
-                        if (err.Length > 40000) err.Remove(0, err.Length - 30000);
-                    }
-                    if (onErrLine != null) try { onErrLine(line); } catch { }
-                };
-                try
-                {
-                    var r = p.StandardError;
-                    int c;
-                    while ((c = r.Read()) >= 0)
-                    {
-                        if (c == '\r' || c == '\n') flush(); else sb.Append((char)c);
-                    }
-                    flush();
-                }
-                catch { }
-            }) { IsBackground = true };
-            tErr.Start();
+            var tErr = ReadErrAsync(p.StandardError, err, onErrLine);
 
             try
             {
                 if (stdin != null)
                 {
-                    p.StandardInput.BaseStream.Write(stdin, 0, stdin.Length);
-                    p.StandardInput.BaseStream.Flush();
+                    await p.StandardInput.BaseStream.WriteAsync(stdin, 0, stdin.Length).ConfigureAwait(false);
+                    await p.StandardInput.BaseStream.FlushAsync().ConfigureAwait(false);
                 }
                 p.StandardInput.Close();
             }
             catch (IOException) { }
 
-            p.WaitForExit();
-            tOut.Join();
-            tErr.Join();
+            // a cancel kills the process: this wait ends with it
+            await p.WaitForExitAsync().ConfigureAwait(false);
+            try { await tOut.ConfigureAwait(false); } catch { }
+            await tErr.ConfigureAwait(false);
             lock (gate) running.Remove(p);
             var res = new GitResult { Code = p.ExitCode, Out = outMs.ToArray(), Err = err.ToString() };
             p.Dispose();
@@ -192,9 +175,39 @@ namespace Paranoidal
             return res;
         }
 
-        public GitResult Check(string what, params string[] args)
+        /// <summary>stderr line by line (git ends progress lines with \r): kept for the error text, each line to onErrLine.</summary>
+        static async Task ReadErrAsync(StreamReader r, StringBuilder err, Action<string> onErrLine)
         {
-            var r = Run(args);
+            var sb = new StringBuilder();
+            void Flush()
+            {
+                if (sb.Length == 0) return;
+                var line = sb.ToString(); sb.Clear();
+                lock (err)
+                {
+                    err.AppendLine(line);
+                    if (err.Length > 40000) err.Remove(0, err.Length - 30000);
+                }
+                if (onErrLine != null) try { onErrLine(line); } catch { }
+            }
+            try
+            {
+                var buf = new char[4096];
+                int n;
+                while ((n = await r.ReadAsync(buf.AsMemory()).ConfigureAwait(false)) > 0)
+                    for (int i = 0; i < n; i++)
+                    {
+                        char c = buf[i];
+                        if (c == '\r' || c == '\n') Flush(); else sb.Append(c);
+                    }
+                Flush();
+            }
+            catch { }
+        }
+
+        public async Task<GitResult> CheckAsync(string what, params string[] args)
+        {
+            var r = await RunAsync(args).ConfigureAwait(false);
             if (r.Code != 0) throw new SyncException(what + ": " + r.LastErrorLine());
             return r;
         }
@@ -237,11 +250,12 @@ namespace Paranoidal
         }
     }
 
-    /// <summary>Extracts the embedded MinGit once into AppInfo.DataDir.</summary>
+    /// <summary>Extracts the embedded MinGit once into AppInfo.DataDir (Windows); elsewhere the system git.</summary>
     static class GitBootstrap
     {
         public static string Ensure(Action<string, string> stage)
         {
+            if (!OperatingSystem.IsWindows()) return SystemGit();
             var dir = Path.Combine(AppInfo.DataDir, "mingit-" + AppInfo.MinGitVersion);
             var exe = Path.Combine(dir, "cmd", "git.exe");
             var marker = Path.Combine(dir, ".extracted");
@@ -260,6 +274,23 @@ namespace Paranoidal
             if (Directory.Exists(dir)) FsUtil.DeleteDir(dir);
             Directory.Move(tmp, dir);
             return exe;
+        }
+
+        /// <summary>git from PATH (Linux, macOS): MinGit is a Windows build.</summary>
+        static string SystemGit()
+        {
+            foreach (var d in (Environment.GetEnvironmentVariable("PATH") ?? "").Split(Path.PathSeparator))
+            {
+                if (d.Length == 0) continue;
+                try
+                {
+                    var exe = Path.Combine(d, "git");
+                    if (File.Exists(exe)) return exe;
+                }
+                catch { }
+            }
+            throw new SyncException("Не найден git. Установите пакет git из репозитория вашей системы и запустите лаунчер снова.",
+                "git was not found. Install the git package of your system and start the launcher again.");
         }
     }
 }

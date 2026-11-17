@@ -1,9 +1,10 @@
 using System;
 using System.IO;
-using System.Net;
 using System.Reflection;
+using System.Runtime.CompilerServices;
 using System.Threading;
-using System.Windows.Forms;
+using Avalonia;
+using Avalonia.Threading;
 
 // name and version come from AppInfo only (single source, see AppInfo.Version)
 [assembly: AssemblyTitle(Paranoidal.AppInfo.Name)]
@@ -12,6 +13,9 @@ using System.Windows.Forms;
 [assembly: AssemblyVersion(Paranoidal.AppInfo.AssemblyVersion)]
 [assembly: AssemblyFileVersion(Paranoidal.AppInfo.AssemblyVersion)]
 [assembly: AssemblyInformationalVersion(Paranoidal.AppInfo.Version)]
+// the engine driver and the UI pictures tool (tools/Harness, tools/UiShot) use the internal classes
+[assembly: InternalsVisibleTo("Harness")]
+[assembly: InternalsVisibleTo("UiShot")]
 
 namespace Paranoidal
 {
@@ -45,17 +49,18 @@ namespace Paranoidal
                     return 0;
                 }
                 Settings.MigratePaths();
-                ServicePointManager.SecurityProtocol |= SecurityProtocolType.Tls12;
-                Application.EnableVisualStyles();
-                Application.SetCompatibleTextRenderingDefault(false);
-                Application.ThreadException += (s, e) => Crash(e.Exception);
-                AppDomain.CurrentDomain.UnhandledException += (s, e) => Crash(e.ExceptionObject as Exception);
-                Application.Run(new MainForm());
+                AppDomain.CurrentDomain.UnhandledException += (s, e) => Crash(e.ExceptionObject as Exception, false);
+                BuildAvaloniaApp().AfterSetup(_ =>
+                {
+                    Dispatcher.UIThread.UnhandledException += (s, e) => { e.Handled = true; Crash(e.Exception, true); };
+                }).StartWithClassicDesktopLifetime(args);
             }
             return 0;
         }
 
-        static void Crash(Exception ex)
+        public static AppBuilder BuildAvaloniaApp() => AppBuilder.Configure<App>().UsePlatformDetect();
+
+        internal static void Crash(Exception ex, bool ui)
         {
             try
             {
@@ -64,10 +69,15 @@ namespace Paranoidal
                     DateTime.Now + "  " + AppInfo.Name + " " + AppInfo.Version + "\r\n" + ex + "\r\n\r\n");
             }
             catch { }
-            MessageBox.Show(Tr.T("Непредвиденная ошибка:\n", "Unexpected error:\n") + (ex == null ? "?" : ex.Message) +
+            var text = Tr.T("Непредвиденная ошибка:\n", "Unexpected error:\n") + (ex == null ? "?" : ex.Message) +
                 Tr.T("\n\nПодробности: ", "\n\nDetails: ") + Path.Combine(AppInfo.DataDir, "crash.txt") +
-                Tr.T("\nКнопка «Отчёт о проблеме» соберёт его в ZIP для Discord.", "\nThe \"Problem report\" button packs it into a ZIP for Discord."),
-                AppInfo.Name, MessageBoxButtons.OK, MessageBoxIcon.Error);
+                Tr.T("\nКнопка «Отчёт о проблеме» соберёт его в ZIP для Discord.", "\nThe \"Problem report\" button packs it into a ZIP for Discord.");
+            try
+            {
+                if (ui) { _ = DarkDialog.Info(MainWindow.Current, AppInfo.Name, text, Gui.Red); return; }
+            }
+            catch { }
+            SingleInstance.Info(text, AppInfo.Name);
         }
     }
 }

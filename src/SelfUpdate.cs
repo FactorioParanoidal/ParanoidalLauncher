@@ -5,6 +5,7 @@ using System.Diagnostics;
 using System.IO;
 using System.Reflection;
 using System.Threading;
+using System.Threading.Tasks;
 
 namespace Paranoidal
 {
@@ -23,7 +24,7 @@ namespace Paranoidal
         {
             get
             {
-                try { return Path.GetFullPath(Assembly.GetEntryAssembly().Location); }
+                try { return Path.GetFullPath(Environment.ProcessPath); }
                 catch { return Path.Combine(AppInfo.ExeDir, AppInfo.ExeName); }
             }
         }
@@ -41,13 +42,13 @@ namespace Paranoidal
         }
 
         /// <summary>Deletes exe.old left by an update (the old process may still be exiting: a few tries).</summary>
-        public static void CleanupOld(string exe)
+        public static async Task CleanupOldAsync(string exe)
         {
             var old = exe + OldSuffix;
             for (int i = 0; i < 10 && File.Exists(old); i++)
             {
                 try { File.SetAttributes(old, FileAttributes.Normal); File.Delete(old); }
-                catch { Thread.Sleep(300); }
+                catch { await Task.Delay(300); }
             }
             try { if (File.Exists(exe + NewSuffix)) File.Delete(exe + NewSuffix); } catch { }
             try
@@ -94,11 +95,10 @@ namespace Paranoidal
 
         /// <summary>
         /// Runs `helperExe --install-exe src targetDir` with administrator rights (UAC) and waits for it.
-        /// False with error = null: the player declined the UAC question.
+        /// Ok false with Error null: the player declined the UAC question.
         /// </summary>
-        public static bool InstallElevated(string helperExe, string src, string targetDir, out string error)
+        public static async Task<(bool Ok, string Error)> InstallElevatedAsync(string helperExe, string src, string targetDir)
         {
-            error = null;
             var psi = new ProcessStartInfo(helperExe, "--install-exe " + FsUtil.QuoteArg(src) + " " + FsUtil.QuoteArg(targetDir))
             {
                 UseShellExecute = true,
@@ -109,15 +109,14 @@ namespace Paranoidal
             {
                 using (var p = Process.Start(psi))
                 {
-                    if (p == null) { error = "процесс не запустился"; return false; }
-                    p.WaitForExit();
-                    if (p.ExitCode == 0) return true;
-                    error = "помощник с правами администратора завершился с кодом " + p.ExitCode;
-                    return false;
+                    if (p == null) return (false, "процесс не запустился");
+                    await p.WaitForExitAsync();
+                    if (p.ExitCode == 0) return (true, null);
+                    return (false, "помощник с правами администратора завершился с кодом " + p.ExitCode);
                 }
             }
-            catch (Win32Exception ex) when (ex.NativeErrorCode == 1223) { return false; }   // ERROR_CANCELLED: UAC declined
-            catch (Exception ex) { error = ex.Message; return false; }
+            catch (Win32Exception ex) when (ex.NativeErrorCode == 1223) { return (false, null); }   // ERROR_CANCELLED: UAC declined
+            catch (Exception ex) { return (false, ex.Message); }
         }
 
         /// <summary>Helper mode (elevated): put src as targetDir\ParanoidalLauncher.exe. Exit code 0 = done.</summary>

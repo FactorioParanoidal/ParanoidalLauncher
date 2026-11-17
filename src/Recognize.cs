@@ -4,6 +4,7 @@ using System.IO;
 using System.Linq;
 using System.Text;
 using System.Text.RegularExpressions;
+using System.Threading.Tasks;
 
 namespace Paranoidal
 {
@@ -87,7 +88,7 @@ namespace Paranoidal
         /// launcher downloaded before). Works without internet. Returns the top-level entries (name, object id) for the
         /// online attempt in CheckStatus, or null when the folder could not be read.
         /// </summary>
-        List<KeyValuePair<string, string>> Recognize(SyncPaths p, StatusInfo st)
+        async Task<List<KeyValuePair<string, string>>> RecognizeAsync(SyncPaths p, StatusInfo st)
         {
             Stage("Узнаю сборку в папке mods…", "Recognising the build in the mods folder…");
             ui.Progress(null, Tr.T("Первый раз это может занять минуту: git считает хеши файлов.",
@@ -96,8 +97,8 @@ namespace Paranoidal
             string tree;
             try
             {
-                Prepare(p);
-                local = LocalTree(p, st.Installed, out tree);
+                await PrepareAsync(p);
+                (local, tree) = await LocalTreeAsync(p, st.Installed);
             }
             catch (OperationCanceledException) { throw; }
             catch (Exception ex)
@@ -108,13 +109,13 @@ namespace Paranoidal
             if (local == null) return null;
             st.Found.Fingerprint = tree.Substring(0, 8);
             ui.Log("Отпечаток файлов в папке mods: " + st.Found.Fingerprint + (st.Installed == null ? " (версия сборки не записана)" : ""), LogKind.Muted);
-            MatchAndAdopt(p, st, local);
+            await MatchAndAdoptAsync(p, st, local);
             return local;
         }
 
-        List<KeyValuePair<string, string>> LocalTree(SyncPaths p, string seed, out string treeId)
+        /// <summary>The top-level entries of mods\ as they are on disk and the id of their tree (both null: mods\ is empty).</summary>
+        async Task<(List<KeyValuePair<string, string>> Entries, string Tree)> LocalTreeAsync(SyncPaths p, string seed)
         {
-            treeId = null;
             Bind(p);
             Directory.CreateDirectory(Path.Combine(FpObjects(p), "pack"));
             Directory.CreateDirectory(Path.Combine(FpObjects(p), "info"));
@@ -123,13 +124,13 @@ namespace Paranoidal
             {
                 // the file modes (a few mods have executable files) come from a known version; without one every file is
                 // 100644 and the comparison below ignores mode-only differences anyway
-                if (seed == null) seed = LocalCommits().Select(c => c.Key).FirstOrDefault();
-                if (seed != null) git.Run(new[] { "read-tree", seed }, null, null, env);
+                if (seed == null) seed = (await LocalCommitsAsync()).Select(c => c.Key).FirstOrDefault();
+                if (seed != null) await git.RunAsync(new[] { "read-tree", seed }, null, null, env);
             }
-            git.Run(new[] { "update-index", "-q", "--refresh" }, null, null, env);
+            await git.RunAsync(new[] { "update-index", "-q", "--refresh" }, null, null, env);
             var exclude = Path.Combine(p.GitDir, "info", "exclude");
-            var changed = git.Run(new[] { "ls-files", "-z", "-m", "-d", "--", "mods" }, null, null, env);
-            var added = git.Run(new[] { "ls-files", "-z", "-o", "--exclude-from=" + exclude, "--", "mods" }, null, null, env);
+            var changed = await git.RunAsync(new[] { "ls-files", "-z", "-m", "-d", "--", "mods" }, null, null, env);
+            var added = await git.RunAsync(new[] { "ls-files", "-z", "-o", "--exclude-from=" + exclude, "--", "mods" }, null, null, env);
             if (changed.Code != 0 || added.Code != 0) throw new SyncException("git ls-files: " + (changed.Code != 0 ? changed : added).LastErrorLine());
             var paths = new HashSet<string>(SplitZ(changed.Out), StringComparer.Ordinal);
             foreach (var a in SplitZ(added.Out)) paths.Add(a);
@@ -137,22 +138,21 @@ namespace Paranoidal
             {
                 ui.Progress(null, Tr.T("Файлов для проверки: ", "Files to check: ") + Fmt.Num(paths.Count));
                 var input = Encoding.UTF8.GetBytes(string.Join("\0", paths) + "\0");
-                var r = git.Run(new[] { "update-index", "--add", "--remove", "--info-only", "-z", "--stdin" }, input, null, env);
+                var r = await git.RunAsync(new[] { "update-index", "--add", "--remove", "--info-only", "-z", "--stdin" }, input, null, env);
                 if (r.Code != 0) throw new SyncException("git update-index: " + r.LastErrorLine());
             }
-            var wt = git.Run(new[] { "write-tree", "--missing-ok" }, null, null, env);
+            var wt = await git.RunAsync(new[] { "write-tree", "--missing-ok" }, null, null, env);
             if (wt.Code != 0 || !Regex.IsMatch(wt.Text, "^[0-9a-f]{40}$")) throw new SyncException("git write-tree: " + wt.LastErrorLine());
-            var mods = git.Run(new[] { "rev-parse", wt.Text + ":mods" }, null, null, env);
-            if (mods.Code != 0) return null;   // nothing in mods\
-            treeId = mods.Text;
-            return TreeEntries(treeId, env);
+            var mods = await git.RunAsync(new[] { "rev-parse", wt.Text + ":mods" }, null, null, env);
+            if (mods.Code != 0) return (null, null);   // nothing in mods\
+            return (await TreeEntriesAsync(mods.Text, env), mods.Text);
         }
 
         /// <summary>Entries (name, object id) of one tree.</summary>
-        List<KeyValuePair<string, string>> TreeEntries(string tree, IDictionary<string, string> env)
+        async Task<List<KeyValuePair<string, string>>> TreeEntriesAsync(string tree, IDictionary<string, string> env)
         {
             var res = new List<KeyValuePair<string, string>>();
-            var r = git.Run(new[] { "ls-tree", "-z", tree }, null, null, env);
+            var r = await git.RunAsync(new[] { "ls-tree", "-z", tree }, null, null, env);
             if (r.Code != 0) return res;
             foreach (var e in SplitZ(r.Out))
             {
@@ -166,17 +166,17 @@ namespace Paranoidal
         }
 
         /// <summary>Commits known locally (downloaded by updates and by FetchHistory) with their time, newest first.</summary>
-        List<KeyValuePair<string, long>> LocalCommits()
+        async Task<List<KeyValuePair<string, long>>> LocalCommitsAsync()
         {
             var res = new List<KeyValuePair<string, long>>();
             if (!File.Exists(Path.Combine(git.GitDir ?? "", "HEAD"))) return res;
-            var all = git.Run(new[] { "cat-file", "--batch-all-objects", "--batch-check=%(objecttype) %(objectname)" });
+            var all = await git.RunAsync(new[] { "cat-file", "--batch-all-objects", "--batch-check=%(objecttype) %(objectname)" });
             if (all.Code != 0) return res;
             var commits = new List<string>();
             foreach (var line in Encoding.ASCII.GetString(all.Out).Split('\n'))
                 if (line.StartsWith("commit ")) commits.Add(line.Substring(7).Trim());
             if (commits.Count == 0) return res;
-            var log = git.Run(new[] { "log", "--no-walk=unsorted", "--stdin", "--format=%H %ct" }, Encoding.ASCII.GetBytes(string.Join("\n", commits) + "\n"));
+            var log = await git.RunAsync(new[] { "log", "--no-walk=unsorted", "--stdin", "--format=%H %ct" }, Encoding.ASCII.GetBytes(string.Join("\n", commits) + "\n"));
             if (log.Code != 0) return res;
             foreach (var line in Encoding.ASCII.GetString(log.Out).Split('\n'))
             {
@@ -191,14 +191,15 @@ namespace Paranoidal
         /// Downloads the list of build versions of the last 120 days with their folder trees (commits and trees only, no
         /// files: ~2 MB, ~20 s the first time, then only the new ones). Returns false without a connection.
         /// </summary>
-        bool FetchHistory(SyncPaths p)
+        async Task<bool> FetchHistoryAsync(SyncPaths p)
         {
             Stage("Ищу версию сборки на GitHub…", "Looking the build version up on GitHub…");
             ui.Progress(null, Tr.T("Скачиваю список версий сборки за последние месяцы (без файлов).", "Downloading the list of build versions of the last months (no files)."));
-            try { Prepare(p); }
+            try { await PrepareAsync(p); }
+            catch (OperationCanceledException) { throw; }
             catch (Exception ex) { ui.Log("Не удалось подготовить папку .paranoidal-git: " + ex.Message, LogKind.Warn); return false; }
             var since = DateTime.UtcNow.AddDays(-120).ToString("yyyy-MM-dd");
-            var r = git.Run(new[] { "fetch", "--progress", "--shallow-since=" + since, "--filter=blob:none", "--no-tags", "origin",
+            var r = await git.RunAsync(new[] { "fetch", "--progress", "--shallow-since=" + since, "--filter=blob:none", "--no-tags", "origin",
                 "+refs/heads/" + AppInfo.Branch + ":refs/remotes/origin/" + AppInfo.Branch }, null, line =>
                 {
                     var pr = GitProgress.Parse(line);
@@ -213,16 +214,16 @@ namespace Paranoidal
         /// Compares the folder with every known build version. An exact match (all files of every mod of that version are
         /// here; mods not from the build do not matter) becomes the installed version; otherwise the closest one is noted.
         /// </summary>
-        void MatchAndAdopt(SyncPaths p, StatusInfo st, List<KeyValuePair<string, string>> local)
+        async Task MatchAndAdoptAsync(SyncPaths p, StatusInfo st, List<KeyValuePair<string, string>> local)
         {
             Bind(p);
-            var commits = LocalCommits();
+            var commits = await LocalCommitsAsync();
             if (commits.Count == 0) return;
             var localMap = new Dictionary<string, string>(StringComparer.Ordinal);
             foreach (var kv in local) localMap[kv.Key] = kv.Value;
 
             // mods tree of every commit, then the content of each distinct tree
-            var check = git.Run(new[] { "cat-file", "--batch-check" }, Encoding.ASCII.GetBytes(string.Join("\n", commits.Select(c => c.Key + ":mods")) + "\n"));
+            var check = await git.RunAsync(new[] { "cat-file", "--batch-check" }, Encoding.ASCII.GetBytes(string.Join("\n", commits.Select(c => c.Key + ":mods")) + "\n"));
             if (check.Code != 0) return;
             var lines = Encoding.UTF8.GetString(check.Out).Split('\n');
             var modsTree = new Dictionary<string, string>();
@@ -231,7 +232,7 @@ namespace Paranoidal
                 var f = lines[i].Trim().Split(' ');
                 if (f.Length >= 2 && f[1] == "tree") modsTree[commits[i].Key] = f[0];
             }
-            var trees = ReadTrees(modsTree.Values.Distinct().ToList());
+            var trees = await ReadTreesAsync(modsTree.Values.Distinct().ToList());
 
             var scored = new List<Tuple<string, long, List<string>, int>>();
             foreach (var c in commits)
@@ -253,12 +254,12 @@ namespace Paranoidal
             // trees differ also when only the executable bit of a file differs (the local one is guessed): look closer at the best ones
             var modeOnly = new Dictionary<string, bool>();
             var env = FpEnv(p);
-            Func<string, string, bool> sameContent = (mine, theirs) =>
+            async Task<bool> SameContent(string mine, string theirs)
             {
                 bool same;
                 var key = mine + theirs;
                 if (modeOnly.TryGetValue(key, out same)) return same;
-                var d = git.Run(new[] { "diff-tree", "-r", "--raw", "--abbrev=40", "--no-renames", mine, theirs }, null, null, env);
+                var d = await git.RunAsync(new[] { "diff-tree", "-r", "--raw", "--abbrev=40", "--no-renames", mine, theirs }, null, null, env);
                 same = d.Code == 0;
                 if (same)
                     foreach (var l in d.Text.Split('\n'))
@@ -268,17 +269,18 @@ namespace Paranoidal
                     }
                 modeOnly[key] = same;
                 return same;
-            };
+            }
             foreach (var s in scored.OrderBy(x => x.Item3.Count).ThenByDescending(x => x.Item2).Take(5).ToList())
             {
                 if (s.Item3.Count > 5) continue;
                 var entries = trees[modsTree[s.Item1]];
-                s.Item3.RemoveAll(name => localMap.ContainsKey(name) && sameContent(localMap[name], entries[name]));
+                foreach (var name in s.Item3.ToList())
+                    if (localMap.ContainsKey(name) && await SameContent(localMap[name], entries[name])) s.Item3.Remove(name);
             }
             var best = scored.OrderBy(x => x.Item3.Count).ThenByDescending(x => x.Item2).First();
             if (best.Item3.Count == 0)
             {
-                Adopt(p, st, best.Item1);
+                await AdoptAsync(p, st, best.Item1);
                 return;
             }
             st.Found.Near = best.Item1;
@@ -292,11 +294,11 @@ namespace Paranoidal
         }
 
         /// <summary>Tree id -> (name -> object id) via one cat-file --batch.</summary>
-        Dictionary<string, Dictionary<string, string>> ReadTrees(List<string> ids)
+        async Task<Dictionary<string, Dictionary<string, string>>> ReadTreesAsync(List<string> ids)
         {
             var res = new Dictionary<string, Dictionary<string, string>>();
             if (ids.Count == 0) return res;
-            var r = git.Run(new[] { "cat-file", "--batch" }, Encoding.ASCII.GetBytes(string.Join("\n", ids) + "\n"));
+            var r = await git.RunAsync(new[] { "cat-file", "--batch" }, Encoding.ASCII.GetBytes(string.Join("\n", ids) + "\n"));
             if (r.Code != 0) return res;
             var d = r.Out;
             int pos = 0;
@@ -331,20 +333,20 @@ namespace Paranoidal
         /// The files in mods\ are exactly build version `sha`: record it as installed. No file of mods\ is changed; the
         /// hashes of the recognition index are reused, so git does not read the files again.
         /// </summary>
-        void Adopt(SyncPaths p, StatusInfo st, string sha)
+        async Task AdoptAsync(SyncPaths p, StatusInfo st, string sha)
         {
             Bind(p);
             var index = Path.Combine(p.GitDir, "index");
             try { if (File.Exists(FpIndex(p))) File.Copy(FpIndex(p), index, true); } catch { }
-            ResetIndex(p, sha);
+            await ResetIndexAsync(p, sha);
             File.WriteAllText(p.SyncedFile, sha + "\n");
             var before = st.Installed;
             if (before != null && before != sha) DropRollback(p);   // the files were changed outside the launcher
             st.AdoptedFrom = before;
             st.Adopted = before != sha;
             st.Installed = sha;
-            st.InstalledDate = CommitDate(sha);
-            st.Modified = LocalChanges(p, sha, null);
+            st.InstalledDate = await CommitDateAsync(sha);
+            st.Modified = await LocalChangesAsync(p, sha, null);
             st.Found.Match = sha;
             st.Found.MatchDate = st.InstalledDate;
             if (before == null)
